@@ -21,39 +21,40 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <model_tflite.h>
 #include <stdio.h>
 #include <string.h>
-#include <model_tflite.h>
 #include <tensorflow/lite/core/c/common.h>
-#include <tensorflow/lite/micro/micro_log.h>
-#include <tensorflow/lite/micro/system_setup.h>
-#include <tensorflow/lite/micro/micro_profiler.h>
-#include <tensorflow/lite/micro/micro_op_resolver.h>
 #include <tensorflow/lite/micro/micro_interpreter.h>
-#include <tensorflow/lite/schema/schema_generated.h>
+#include <tensorflow/lite/micro/micro_log.h>
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
+#include <tensorflow/lite/micro/micro_op_resolver.h>
+#include <tensorflow/lite/micro/micro_profiler.h>
 #include <tensorflow/lite/micro/recording_micro_interpreter.h>
+#include <tensorflow/lite/micro/system_setup.h>
+#include <tensorflow/lite/schema/schema_generated.h>
 
-#include "lsm6dsl.h"
 #include "b_l475e_iot01a1_bus.h"
+#include "fatfs.h"
+#include "gps.h"
+#include "lsm6dsl.h"
+#include "sd_log.h"
 
 #include <dsp/basic_math_functions.h>
 #include <dsp/fast_math_functions.h>
 #include <dsp/transform_functions.h>
 #include <dsp/window_functions.h>
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 const int kTensorArenaSize = 48000;
 alignas(16) static uint8_t tensor_arena[kTensorArenaSize];
-
-/* USER CODE END PD */
 
 #define DEBUG_PRINTF(...)                                                      \
   {                                                                            \
@@ -98,101 +99,14 @@ static const float SCALER_SCALE[48] = {
 static const char *CLASS_NAMES[6] = {"Idle State",          "Normal Driving",
                                      "Sudden Acceleration", "Sudden Right Turn",
                                      "Sudden Left Turn",    "Sudden Brake"};
-#define N_FEATURES  48
-#define WINDOW_SIZE 28   /* samples per inference window */
-#define STEP_SIZE   14   /* 50 % overlap — run inference every 14 new samples */
-#define N_CHANNELS   6   /* GyroX, GyroY, GyroZ, AccX, AccY, AccZ */
-#define N_STATS      8   /* mean, std, min, max, Q1, Q3, RMS, range */
+#define N_FEATURES 48
+#define WINDOW_SIZE 28 /* samples per inference window */
+#define STEP_SIZE 14   /* 50 % overlap — run inference every 14 new samples */
+#define N_CHANNELS 6   /* GyroX, GyroY, GyroZ, AccX, AccY, AccZ */
+#define N_STATS 8      /* mean, std, min, max, Q1, Q3, RMS, range */
 
-void PrintModelDetails(const tflite::Model *model) {
-  DEBUG_PRINTF("TFlite schema version: %lu\n", model->version());
-  assert(model->version() == TFLITE_SCHEMA_VERSION);
+/* USER CODE END PD */
 
-  // Primary subgraph usually at index 0
-  const tflite::SubGraph *subgraph = model->subgraphs()->Get(0);
-
-  DEBUG_PRINTF("Number of tensors: %lu\n", subgraph->tensors()->size());
-  for (size_t i = 0; i < subgraph->tensors()->size(); i++) {
-    const tflite::Tensor *tensor = subgraph->tensors()->Get(i);
-    DEBUG_PRINTF("    %u: %s\n", i,
-                 (char *)tflite::EnumNameTensorType(tensor->type()));
-  }
-  DEBUG_PRINTF("Number of operators: %lu\n", subgraph->operators()->size());
-
-  // Iterate over operators and print their details
-  for (size_t i = 0; i < subgraph->operators()->size(); i++) {
-    const tflite::Operator *op = subgraph->operators()->Get(i);
-    const tflite::OperatorCode *op_code =
-        model->operator_codes()->Get(op->opcode_index());
-
-    const char *op_name = tflite::EnumNameBuiltinOperator(
-        static_cast<tflite::BuiltinOperator>(op_code->builtin_code()));
-
-    DEBUG_PRINTF("    %u: %s\n", i, op_name);
-
-    DEBUG_PRINTF("        Inputs: ");
-    for (size_t j = 0; j < op->inputs()->size(); j++) {
-      printf("%lu ", op->inputs()->Get(j));
-    }
-    printf("\n");
-
-    DEBUG_PRINTF("        Outputs: ");
-    for (size_t j = 0; j < op->outputs()->size(); j++) {
-      printf("%lu ", op->outputs()->Get(j));
-    }
-    printf("\n");
-  }
-}
-
-/* Insertion sort — fast enough for n=28 */
-static void isort(float *a, int n) {
-  for (int i = 1; i < n; i++) {
-    float k = a[i]; int j = i - 1;
-    while (j >= 0 && a[j] > k) { a[j+1] = a[j]; j--; }
-    a[j+1] = k;
-  }
-}
-
-/* Compute 8 statistics for one channel into out[0..7]:
-   mean, std, min, max, Q1, Q3, RMS, range
-   Percentiles use linear interpolation — matches numpy.percentile default. */
-static void channel_stats(const float *col, int n, float *out) {
-  float mn = col[0], mx = col[0], sum = 0, sum_sq = 0;
-  for (int i = 0; i < n; i++) {
-    sum    += col[i];  sum_sq += col[i] * col[i];
-    if (col[i] < mn) mn = col[i];
-    if (col[i] > mx) mx = col[i];
-  }
-  float mean = sum / n, var = 0;
-  for (int i = 0; i < n; i++) { float d = col[i] - mean; var += d * d; }
-
-  float s[WINDOW_SIZE];
-  memcpy(s, col, (size_t)n * sizeof(float));
-  isort(s, n);
-
-  float q1i = 0.25f * (n - 1), q3i = 0.75f * (n - 1);
-  int   q1l = (int)q1i,         q3l = (int)q3i;
-  float q1  = s[q1l] + (q1i - q1l) * (s[q1l + 1] - s[q1l]);
-  float q3  = s[q3l] + (q3i - q3l) * (s[q3l + 1] - s[q3l]);
-
-  out[0] = mean;           out[1] = sqrtf(var / n);
-  out[2] = mn;             out[3] = mx;
-  out[4] = q1;             out[5] = q3;
-  out[6] = sqrtf(sum_sq / n);  out[7] = mx - mn;
-}
-
-void print_shape(TfLiteTensor *tensor) {
-  const char *name = (tensor->name != nullptr) ? tensor->name : "(unnamed)";
-  DEBUG_PRINTF("%s bytes = %u\n", name, (unsigned)tensor->bytes);
-  DEBUG_PRINTF("%s shape = (", name);
-  for (int i = 0; i < tensor->dims->size; i++) {
-    RAW_PRINTF("%d", tensor->dims->data[i]);
-    if (i != tensor->dims->size - 1) {
-      RAW_PRINTF(", ");
-    }
-  }
-  RAW_PRINTF(")\n");
-}
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
@@ -205,12 +119,13 @@ I2C_HandleTypeDef hi2c1;
 
 QSPI_HandleTypeDef hqspi;
 
+SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi3;
 
+UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
-
-PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 LSM6DSL_Object_t MotionSensor;
@@ -221,16 +136,22 @@ volatile uint32_t dataRdyIntReceived;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DFSDM1_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_QUADSPI_Init(void);
 static void MX_SPI3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART3_UART_Init(void);
-static void MX_USB_OTG_FS_PCD_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_UART4_Init(void);
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 static void MEMS_Init(void);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
+void PrintModelDetails(const tflite::Model *model);
+static void isort(float *a, int n);
+static void channel_stats(const float *col, int n, float *out);
+void print_shape(TfLiteTensor *tensor);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -268,12 +189,15 @@ int main(void) {
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DFSDM1_Init();
-  MX_I2C1_Init();
   MX_QUADSPI_Init();
   MX_SPI3_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
-  MX_USB_OTG_FS_PCD_Init();
+  MX_I2C1_Init();
+  MX_SPI1_Init();
+  MX_USART2_UART_Init();
+  MX_FATFS_Init();
+  MX_UART4_Init();
 
   /* Initialize interrupts */
   MX_NVIC_Init();
@@ -307,9 +231,18 @@ int main(void) {
 
   /* Sliding-window state (28 samples × 6 channels, 50 % overlap) */
   static float win_buf[WINDOW_SIZE][N_CHANNELS] = {};
-  static int   win_head          = 0;
-  static int   win_count         = 0;
-  static int   steps_since_infer = STEP_SIZE; /* ≥ STEP_SIZE → first full window fires immediately */
+  static int win_head = 0;
+  static int win_count = 0;
+  static int steps_since_infer =
+      STEP_SIZE; /* ≥ STEP_SIZE → first full window fires immediately */
+
+  GPS_Init();
+  int sd_check = SD_Log_Init();
+  if (sd_check != 0) {
+    DEBUG_PRINTF("SD card init FAILED with code %i\n", sd_check);
+  } else {
+    DEBUG_PRINTF("SD card ready\n");
+  }
 
   /* USER CODE END 2 */
 
@@ -327,16 +260,18 @@ int main(void) {
       LSM6DSL_GYRO_GetAxes(&MotionSensor, &gyro);
 
       /* Channel order: [GyroX, GyroY, GyroZ, AccX, AccY, AccZ]
-         Units: mdps ÷ 1000 → dps,   mg ÷ 1000 → g   (match CSV training data) */
+         Units: mdps ÷ 1000 → dps,   mg ÷ 1000 → g   (match CSV training data)
+       */
       win_buf[win_head][0] = (float)gyro.x / 1000.0f;
       win_buf[win_head][1] = (float)gyro.y / 1000.0f;
       win_buf[win_head][2] = (float)gyro.z / 1000.0f;
-      win_buf[win_head][3] = (float)acc.x  / 1000.0f;
-      win_buf[win_head][4] = (float)acc.y  / 1000.0f;
-      win_buf[win_head][5] = (float)acc.z  / 1000.0f;
+      win_buf[win_head][3] = (float)acc.x / 1000.0f;
+      win_buf[win_head][4] = (float)acc.y / 1000.0f;
+      win_buf[win_head][5] = (float)acc.z / 1000.0f;
 
       win_head = (win_head + 1) % WINDOW_SIZE;
-      if (win_count < WINDOW_SIZE) win_count++;
+      if (win_count < WINDOW_SIZE)
+        win_count++;
       steps_since_infer++;
 
       if (win_count == WINDOW_SIZE && steps_since_infer >= STEP_SIZE) {
@@ -346,7 +281,8 @@ int main(void) {
         float col[WINDOW_SIZE], features[N_FEATURES];
         for (int ch = 0; ch < N_CHANNELS; ch++) {
           for (int t = 0; t < WINDOW_SIZE; t++)
-            col[t] = win_buf[(win_head + t) % WINDOW_SIZE][ch]; /* oldest first */
+            col[t] =
+                win_buf[(win_head + t) % WINDOW_SIZE][ch]; /* oldest first */
           channel_stats(col, WINDOW_SIZE, features + ch * N_STATS);
         }
 
@@ -357,24 +293,33 @@ int main(void) {
         if (interpreter.Invoke() != kTfLiteOk) {
           DEBUG_PRINTF("Invoke() failed!\n");
         } else {
-          int best = 0; float prob = out->data.f[0];
+          int best = 0;
+          float prob = out->data.f[0];
           for (int c = 1; c < 6; c++)
-            if (out->data.f[c] > prob) { prob = out->data.f[c]; best = c; }
-          SUCCESS_PRINTF("Prediction: [%d] %s  (%.1f%%)\n",
-                         best, CLASS_NAMES[best], prob * 100.0f);
+            if (out->data.f[c] > prob) {
+              prob = out->data.f[c];
+              best = c;
+            }
+          SUCCESS_PRINTF("Prediction: [%d] %s  (%.1f%%)\n", best,
+                         CLASS_NAMES[best], prob * 100.0f);
           for (int c = 0; c < 6; c++)
-            DEBUG_PRINTF("  [%d] %-24s %.4f\n", c, CLASS_NAMES[c], out->data.f[c]);
+            DEBUG_PRINTF("  [%d] %-24s %.4f\n", c, CLASS_NAMES[c],
+                         out->data.f[c]);
+          const GPS_Fix_t *gps = GPS_GetFix();
+          SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h\n",
+                         gps->valid ? "FIX" : "NO FIX", gps->lat, gps->lon,
+                         gps->speed_kmh);
+          SD_Log_Write(HAL_GetTick(), gps, best, CLASS_NAMES[best],
+                       prob * 100.0f);
         }
       }
       HAL_Delay(100);
-    }
-    else
-    {
+    } else {
       // DEBUG_PRINTF("No data ready interrupt received yet.\n");
       dataRdyIntReceived = 1;
     }
-    /* USER CODE END 3 */
   }
+  /* USER CODE END 3 */
 }
 
 /**
@@ -391,17 +336,10 @@ void SystemClock_Config(void) {
     Error_Handler();
   }
 
-  /** Configure LSE Drive Capability
-   */
-  HAL_PWR_EnableBkUpAccess();
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
-
   /** Initializes the RCC Oscillators according to the specified parameters
    * in the RCC_OscInitTypeDef structure.
    */
-  RCC_OscInitStruct.OscillatorType =
-      RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = 0;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
@@ -428,10 +366,16 @@ void SystemClock_Config(void) {
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
     Error_Handler();
   }
+}
 
-  /** Enable MSI Auto calibration
-   */
-  HAL_RCCEx_EnableMSIPLLMode();
+/**
+ * @brief NVIC Configuration.
+ * @retval None
+ */
+static void MX_NVIC_Init(void) {
+  /* EXTI9_5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 }
 
 /**
@@ -545,6 +489,43 @@ static void MX_QUADSPI_Init(void) {
 }
 
 /**
+ * @brief SPI1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_SPI1_Init(void) {
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 7;
+  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+}
+
+/**
  * @brief SPI3 Initialization Function
  * @param None
  * @retval None
@@ -596,7 +577,7 @@ static void MX_USART1_UART_Init(void) {
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 921600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -611,6 +592,70 @@ static void MX_USART1_UART_Init(void) {
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+}
+
+/**
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART2_UART_Init(void) {
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+}
+
+/**
+ * @brief UART4 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_UART4_Init(void) {
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 9600;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart4) != HAL_OK) {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
 }
 
 /**
@@ -646,38 +691,6 @@ static void MX_USART3_UART_Init(void) {
 }
 
 /**
- * @brief USB_OTG_FS Initialization Function
- * @param None
- * @retval None
- */
-static void MX_USB_OTG_FS_PCD_Init(void) {
-
-  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
-
-  /* USER CODE END USB_OTG_FS_Init 0 */
-
-  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
-
-  /* USER CODE END USB_OTG_FS_Init 1 */
-  hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
-  hpcd_USB_OTG_FS.Init.dev_endpoints = 6;
-  hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
-  hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-  hpcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.battery_charging_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-  hpcd_USB_OTG_FS.Init.vbus_sensing_enable = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK) {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
-
-  /* USER CODE END USB_OTG_FS_Init 2 */
-}
-
-/**
  * @brief GPIO Initialization Function
  * @param None
  * @retval None
@@ -689,26 +702,24 @@ static void MX_GPIO_Init(void) {
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(
-      GPIOE, M24SR64_Y_RF_DISABLE_Pin | M24SR64_Y_GPO_Pin | ISM43362_RST_Pin,
-      GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, ARD_D10_Pin | SPBTLE_RF_RST_Pin | ARD_D9_Pin,
-                    GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, SPBTLE_RF_RST_Pin | ARD_D9_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET); /* SD CS — deasserted at boot */
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB,
                     ARD_D8_Pin | ISM43362_BOOT0_Pin | ISM43362_WAKEUP_Pin |
                         LED2_Pin | SPSGRF_915_SDN_Pin | ARD_D5_Pin,
                     GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(ISM43362_RST_GPIO_Port, ISM43362_RST_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(
@@ -731,48 +742,8 @@ static void MX_GPIO_Init(void) {
   HAL_GPIO_WritePin(ISM43362_SPI3_CSN_GPIO_Port, ISM43362_SPI3_CSN_Pin,
                     GPIO_PIN_SET);
 
-  /*Configure GPIO pins : M24SR64_Y_RF_DISABLE_Pin M24SR64_Y_GPO_Pin
-   * ISM43362_RST_Pin ISM43362_SPI3_CSN_Pin */
-  GPIO_InitStruct.Pin = M24SR64_Y_RF_DISABLE_Pin | M24SR64_Y_GPO_Pin |
-                        ISM43362_RST_Pin | ISM43362_SPI3_CSN_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : USB_OTG_FS_OVRCR_EXTI3_Pin SPSGRF_915_GPIO3_EXTI5_Pin
-   * SPBTLE_RF_IRQ_EXTI6_Pin ISM43362_DRDY_EXTI1_Pin */
-  GPIO_InitStruct.Pin = USB_OTG_FS_OVRCR_EXTI3_Pin |
-                        SPSGRF_915_GPIO3_EXTI5_Pin | SPBTLE_RF_IRQ_EXTI6_Pin |
-                        ISM43362_DRDY_EXTI1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : BUTTON_EXTI13_Pin */
-  GPIO_InitStruct.Pin = BUTTON_EXTI13_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(BUTTON_EXTI13_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : ARD_A5_Pin ARD_A4_Pin ARD_A3_Pin ARD_A2_Pin
-                           ARD_A1_Pin ARD_A0_Pin */
-  GPIO_InitStruct.Pin = ARD_A5_Pin | ARD_A4_Pin | ARD_A3_Pin | ARD_A2_Pin |
-                        ARD_A1_Pin | ARD_A0_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG_ADC_CONTROL;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : ARD_D1_Pin ARD_D0_Pin */
-  GPIO_InitStruct.Pin = ARD_D1_Pin | ARD_D0_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : ARD_D10_Pin SPBTLE_RF_RST_Pin ARD_D9_Pin */
-  GPIO_InitStruct.Pin = ARD_D10_Pin | SPBTLE_RF_RST_Pin | ARD_D9_Pin;
+  /*Configure GPIO pins : SD_CS(PA2) SPBTLE_RF_RST_Pin ARD_D9_Pin */
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | SPBTLE_RF_RST_Pin | ARD_D9_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -792,13 +763,11 @@ static void MX_GPIO_Init(void) {
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(ARD_D7_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ARD_D13_Pin ARD_D12_Pin ARD_D11_Pin */
-  GPIO_InitStruct.Pin = ARD_D13_Pin | ARD_D12_Pin | ARD_D11_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  /*Configure GPIO pins : ARD_A1_Pin ARD_A0_Pin */
+  GPIO_InitStruct.Pin = ARD_A1_Pin | ARD_A0_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG_ADC_CONTROL;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : ARD_D3_Pin */
   GPIO_InitStruct.Pin = ARD_D3_Pin;
@@ -822,11 +791,17 @@ static void MX_GPIO_Init(void) {
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LPS22HB_INT_DRDY_EXTI0_Pin PD11 ARD_D2_Pin HTS221_DRDY_EXTI15_Pin
-                           PMOD_IRQ_EXTI12_Pin */
-  GPIO_InitStruct.Pin = LPS22HB_INT_DRDY_EXTI0_Pin | GPIO_PIN_11 |
-                        ARD_D2_Pin | HTS221_DRDY_EXTI15_Pin |
-                        PMOD_IRQ_EXTI12_Pin;
+  /*Configure GPIO pins : ISM43362_RST_Pin ISM43362_SPI3_CSN_Pin */
+  GPIO_InitStruct.Pin = ISM43362_RST_Pin | ISM43362_SPI3_CSN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LPS22HB_INT_DRDY_EXTI0_Pin PD11 ARD_D2_Pin
+     HTS221_DRDY_EXTI15_Pin PMOD_IRQ_EXTI12_Pin */
+  GPIO_InitStruct.Pin = LPS22HB_INT_DRDY_EXTI0_Pin | GPIO_PIN_11 | ARD_D2_Pin |
+                        HTS221_DRDY_EXTI15_Pin | PMOD_IRQ_EXTI12_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -861,23 +836,11 @@ static void MX_GPIO_Init(void) {
   GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
   HAL_GPIO_Init(PMOD_SPI2_SCK_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PMOD_UART2_CTS_Pin PMOD_UART2_RTS_Pin
-   * PMOD_UART2_TX_Pin PMOD_UART2_RX_Pin */
-  GPIO_InitStruct.Pin = PMOD_UART2_CTS_Pin | PMOD_UART2_RTS_Pin |
-                        PMOD_UART2_TX_Pin | PMOD_UART2_RX_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  /*Configure GPIO pin : ISM43362_DRDY_EXTI1_Pin */
+  GPIO_InitStruct.Pin = ISM43362_DRDY_EXTI1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : ARD_D15_Pin ARD_D14_Pin */
-  GPIO_InitStruct.Pin = ARD_D15_Pin | ARD_D14_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(ISM43362_DRDY_EXTI1_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
@@ -888,29 +851,30 @@ static void MX_GPIO_Init(void) {
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
-/**
- * @brief NVIC Configuration.
- * @retval None
- */
-static void MX_NVIC_Init(void) {
-  /* EXTI9_5_IRQn — covers PD11 (LSM6DSL INT1 on EXTI line 11) */
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+/* USER CODE BEGIN 4 */
+extern "C" int __io_putchar(int ch) {
+  if (ch == '\n') {
+    uint8_t cr = '\r';
+    HAL_UART_Transmit(&huart1, &cr, 1, HAL_MAX_DELAY);
+  }
+  uint8_t b = (uint8_t)ch;
+  HAL_UART_Transmit(&huart1, &b, 1, HAL_MAX_DELAY);
+  return ch;
 }
 
-/* USER CODE BEGIN 4 */
 static void MEMS_Init(void) {
   LSM6DSL_IO_t io_ctx;
 
-  /* Wire the sensor to the BSP I2C2 bus (onboard sensor bus on B-L475E-IOT01A1) */
-  io_ctx.BusType  = 0;                   /* 0 = I2C */
-  io_ctx.Address  = LSM6DSL_I2C_ADD_L;  /* SA0=GND on this board → 0xD5 */
-  io_ctx.Init     = BSP_I2C2_Init;
-  io_ctx.DeInit   = BSP_I2C2_DeInit;
-  io_ctx.ReadReg  = BSP_I2C2_ReadReg;
+  /* Wire the sensor to the BSP I2C2 bus (onboard sensor bus on B-L475E-IOT01A1)
+   */
+  io_ctx.BusType = 0;                 /* 0 = I2C */
+  io_ctx.Address = LSM6DSL_I2C_ADD_L; /* SA0=GND on this board → 0xD5 */
+  io_ctx.Init = BSP_I2C2_Init;
+  io_ctx.DeInit = BSP_I2C2_DeInit;
+  io_ctx.ReadReg = BSP_I2C2_ReadReg;
   io_ctx.WriteReg = BSP_I2C2_WriteReg;
-  io_ctx.GetTick  = BSP_GetTick;
-  io_ctx.Delay    = HAL_Delay;
+  io_ctx.GetTick = BSP_GetTick;
+  io_ctx.Delay = HAL_Delay;
 
   LSM6DSL_RegisterBusIO(&MotionSensor, &io_ctx);
   LSM6DSL_Init(&MotionSensor);
@@ -926,21 +890,118 @@ static void MEMS_Init(void) {
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
-  if (GPIO_Pin == GPIO_PIN_11) {   /* LSM6DSL INT1 on PD11 */
+  if (GPIO_Pin == GPIO_PIN_11) { /* LSM6DSL INT1 on PD11 */
     dataRdyIntReceived = 1;
   }
 }
 
-extern "C" int _write(int fd, char *ptr, int len) {
-  (void)fd;
-  for (int i = 0; i < len; i++) {
-    if (ptr[i] == '\n') {
-      uint8_t cr = '\r';
-      HAL_UART_Transmit(&huart1, &cr, 1, HAL_MAX_DELAY);
-    }
-    HAL_UART_Transmit(&huart1, (uint8_t *)&ptr[i], 1, HAL_MAX_DELAY);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == UART4)
+    GPS_UART_RxCpltCallback();
+}
+
+void PrintModelDetails(const tflite::Model *model) {
+  DEBUG_PRINTF("TFlite schema version: %lu\n", model->version());
+  assert(model->version() == TFLITE_SCHEMA_VERSION);
+
+  // Primary subgraph usually at index 0
+  const tflite::SubGraph *subgraph = model->subgraphs()->Get(0);
+
+  DEBUG_PRINTF("Number of tensors: %lu\n", subgraph->tensors()->size());
+  for (size_t i = 0; i < subgraph->tensors()->size(); i++) {
+    const tflite::Tensor *tensor = subgraph->tensors()->Get(i);
+    DEBUG_PRINTF("    %u: %s\n", i,
+                 (char *)tflite::EnumNameTensorType(tensor->type()));
   }
-  return len;
+  DEBUG_PRINTF("Number of operators: %lu\n", subgraph->operators()->size());
+
+  // Iterate over operators and print their details
+  for (size_t i = 0; i < subgraph->operators()->size(); i++) {
+    const tflite::Operator *op = subgraph->operators()->Get(i);
+    const tflite::OperatorCode *op_code =
+        model->operator_codes()->Get(op->opcode_index());
+
+    const char *op_name = tflite::EnumNameBuiltinOperator(
+        static_cast<tflite::BuiltinOperator>(op_code->builtin_code()));
+
+    DEBUG_PRINTF("    %u: %s\n", i, op_name);
+
+    DEBUG_PRINTF("        Inputs: ");
+    for (size_t j = 0; j < op->inputs()->size(); j++) {
+      printf("%lu ", op->inputs()->Get(j));
+    }
+    printf("\n");
+
+    DEBUG_PRINTF("        Outputs: ");
+    for (size_t j = 0; j < op->outputs()->size(); j++) {
+      printf("%lu ", op->outputs()->Get(j));
+    }
+    printf("\n");
+  }
+}
+
+/* Insertion sort — fast enough for n=28 */
+static void isort(float *a, int n) {
+  for (int i = 1; i < n; i++) {
+    float k = a[i];
+    int j = i - 1;
+    while (j >= 0 && a[j] > k) {
+      a[j + 1] = a[j];
+      j--;
+    }
+    a[j + 1] = k;
+  }
+}
+
+/* Compute 8 statistics for one channel into out[0..7]:
+   mean, std, min, max, Q1, Q3, RMS, range
+   Percentiles use linear interpolation — matches numpy.percentile default. */
+static void channel_stats(const float *col, int n, float *out) {
+  float mn = col[0], mx = col[0], sum = 0, sum_sq = 0;
+  for (int i = 0; i < n; i++) {
+    sum += col[i];
+    sum_sq += col[i] * col[i];
+    if (col[i] < mn)
+      mn = col[i];
+    if (col[i] > mx)
+      mx = col[i];
+  }
+  float mean = sum / n, var = 0;
+  for (int i = 0; i < n; i++) {
+    float d = col[i] - mean;
+    var += d * d;
+  }
+
+  float s[WINDOW_SIZE];
+  memcpy(s, col, (size_t)n * sizeof(float));
+  isort(s, n);
+
+  float q1i = 0.25f * (n - 1), q3i = 0.75f * (n - 1);
+  int q1l = (int)q1i, q3l = (int)q3i;
+  float q1 = s[q1l] + (q1i - q1l) * (s[q1l + 1] - s[q1l]);
+  float q3 = s[q3l] + (q3i - q3l) * (s[q3l + 1] - s[q3l]);
+
+  out[0] = mean;
+  out[1] = sqrtf(var / n);
+  out[2] = mn;
+  out[3] = mx;
+  out[4] = q1;
+  out[5] = q3;
+  out[6] = sqrtf(sum_sq / n);
+  out[7] = mx - mn;
+}
+
+void print_shape(TfLiteTensor *tensor) {
+  const char *name = (tensor->name != nullptr) ? tensor->name : "(unnamed)";
+  DEBUG_PRINTF("%s bytes = %u\n", name, (unsigned)tensor->bytes);
+  DEBUG_PRINTF("%s shape = (", name);
+  for (int i = 0; i < tensor->dims->size; i++) {
+    RAW_PRINTF("%d", tensor->dims->data[i]);
+    if (i != tensor->dims->size - 1) {
+      RAW_PRINTF(", ");
+    }
+  }
+  RAW_PRINTF(")\n");
 }
 /* USER CODE END 4 */
 
@@ -950,10 +1011,9 @@ extern "C" int _write(int fd, char *ptr, int len) {
  */
 void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
-  DEBUG_PRINTF("*** Error_Handler reached — halting ***\n");
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
   while (1) {
-    HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
-    HAL_Delay(200);
   }
   /* USER CODE END Error_Handler_Debug */
 }
