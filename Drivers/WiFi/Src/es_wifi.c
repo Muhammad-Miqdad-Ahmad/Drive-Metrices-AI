@@ -1769,14 +1769,25 @@ ES_WIFI_Status_t ES_WIFI_StartClientConnection(ES_WIFIObject_t *Obj, ES_WIFI_Con
 
   if (ret == ES_WIFI_STATUS_OK)
   {
-    sprintf((char*)Obj->CmdData,"P3=%d.%d.%d.%d\r", conn->RemoteIP[0],conn->RemoteIP[1],
-            conn->RemoteIP[2],conn->RemoteIP[3]);
+    if (conn->Name != NULL)
+    {
+      /* hostname instead of IP: module does its own DNS and sends TLS SNI —
+         required by CDN-fronted endpoints (e.g. Cloudflare) */
+      sprintf((char*)Obj->CmdData,"P3=%s\r", conn->Name);
+    }
+    else
+    {
+      sprintf((char*)Obj->CmdData,"P3=%d.%d.%d.%d\r", conn->RemoteIP[0],conn->RemoteIP[1],
+              conn->RemoteIP[2],conn->RemoteIP[3]);
+    }
     ret = AT_ExecuteCommand(Obj, Obj->CmdData, Obj->CmdData);
   }
 
   if ((ret == ES_WIFI_STATUS_OK) && (conn->Type == ES_WIFI_TCP_SSL_CONNECTION))
   {
-    sprintf((char*)Obj->CmdData,"P9=2\r");
+    /* P9=1: TLS without certificate verification — no root CA is stored on
+       the module, so P9=2 (TLS + server cert check) fails the handshake. */
+    sprintf((char*)Obj->CmdData,"P9=1\r");
     ret = AT_ExecuteCommand(Obj, Obj->CmdData, Obj->CmdData);
   }
 

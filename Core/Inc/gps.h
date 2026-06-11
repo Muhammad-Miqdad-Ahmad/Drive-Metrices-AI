@@ -14,6 +14,7 @@ typedef struct {
 
 void             GPS_Init(void);
 void             GPS_UART_RxCpltCallback(void);
+void             GPS_UART_ErrorCallback(void);
 const GPS_Fix_t *GPS_GetFix(void);
 
 /* Diagnostics: NMEA sentences received since boot (any type).

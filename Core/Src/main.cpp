@@ -26,6 +26,7 @@
 #include "sd_log.h"
 #include "app_log.h"
 #include "lsm6dsl.h"
+#include "net_config.h"
 #include "supabase.h"
 #include "classifier.h"
 #include "b_l475e_iot01a1_bus.h"
@@ -151,7 +152,6 @@ int main(void) {
     DEBUG_PRINTF("SD card ready\n");
   }
 
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -185,13 +185,21 @@ int main(void) {
                        result.probs[c]);
 
         const GPS_Fix_t *gps = GPS_GetFix();
-        SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h  nmea=%lu\n",
+        SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h\n",
                        gps->valid ? "FIX" : "NO FIX", gps->lat, gps->lon,
-                       gps->speed_kmh, (unsigned long)GPS_SentenceCount());
+                       gps->speed_kmh);
         SD_Log_Write(HAL_GetTick(), gps, result.best, CLASS_NAMES[result.best],
                      result.probs[result.best] * 100.0f);
+
+        /* Supabase posting disabled — SD log only, never cleared.
+        static int infer_count = 0;
+        if (++infer_count >= UPLOAD_EVERY_N) {
+          infer_count = 0;
+          Supabase_UploadNow();
+        }
+        */
       }
-      /* Supabase upload disabled while testing the GPS:
+      /* Final geofenced mode:
       Supabase_Process(GPS_GetFix());
       */
       HAL_Delay(100);
@@ -780,6 +788,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == UART4)
     GPS_UART_RxCpltCallback();
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == UART4)
+    GPS_UART_ErrorCallback(); /* clear error + re-arm RX */
 }
 /* USER CODE END 4 */
 

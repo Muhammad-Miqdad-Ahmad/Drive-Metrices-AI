@@ -98,10 +98,18 @@ static int http_request(const char *method, const char *path,
                         const char *body) {
     ES_WIFI_Conn_t conn;
     memset(&conn, 0, sizeof(conn));
-    conn.Number     = SB_SOCKET;
+    conn.Number = SB_SOCKET;
+#if SB_USE_RELAY
+    /* plain HTTP to the relay PC, which forwards to Supabase over HTTPS */
+    static const uint8_t relay_ip[4] = RELAY_IP;
+    conn.Type       = ES_WIFI_TCP_CONNECTION;
+    conn.RemotePort = RELAY_PORT;
+    memcpy(conn.RemoteIP, relay_ip, 4);
+#else
     conn.Type       = ES_WIFI_TCP_SSL_CONNECTION;
     conn.RemotePort = SUPABASE_PORT;
     memcpy(conn.RemoteIP, server_ip, 4);
+#endif
 
     int body_len = (int)strlen(body);
     int hdr_len = snprintf(hdr_buf, sizeof(hdr_buf),
@@ -119,7 +127,8 @@ static int http_request(const char *method, const char *path,
         return -1;
 
     if (ES_WIFI_StartClientConnection(&EsWifiObj, &conn) != ES_WIFI_STATUS_OK) {
-        DEBUG_PRINTF("[SB] TLS connect failed\n");
+        DEBUG_PRINTF("[SB] connect failed (module says: %.100s)\n",
+                     (char *)EsWifiObj.CmdData);
         return -2;
     }
 
@@ -164,28 +173,49 @@ out:
 
 static int net_ensure(void) {
     if (!wifi_joined) {
+        static const struct {
+            const char *ssid;
+            const char *pass;
+        } networks[] = {NET_WIFI_NETWORKS};
+        const int n_networks = sizeof(networks) / sizeof(networks[0]);
+
         if (WIFI_Init() != WIFI_STATUS_OK) {
             DEBUG_PRINTF("[SB] WiFi module init failed\n");
             return -1;
         }
-        DEBUG_PRINTF("[SB] joining \"%s\"...\n", NET_WIFI_SSID);
-        if (WIFI_Connect(NET_WIFI_SSID, NET_WIFI_PASSWORD,
-                         NET_WIFI_SECURITY) != WIFI_STATUS_OK) {
-            DEBUG_PRINTF("[SB] WiFi join failed\n");
+        {
+            char fw[24] = {0};
+            if (WIFI_GetModuleFwRevision(fw, sizeof(fw)) == WIFI_STATUS_OK)
+                DEBUG_PRINTF("[SB] es-wifi firmware: %s\n", fw);
+        }
+
+        for (int i = 0; i < n_networks && !wifi_joined; i++) {
+            DEBUG_PRINTF("[SB] joining \"%s\"...\n", networks[i].ssid);
+            if (WIFI_Connect(networks[i].ssid, networks[i].pass,
+                             NET_WIFI_SECURITY) == WIFI_STATUS_OK) {
+                wifi_joined = 1;
+                uint8_t ip[4] = {0};
+                if (WIFI_GetIP_Address(ip, 4) == WIFI_STATUS_OK)
+                    SUCCESS_PRINTF("[SB] WiFi up on \"%s\", IP %d.%d.%d.%d\n",
+                                   networks[i].ssid, ip[0], ip[1], ip[2],
+                                   ip[3]);
+            }
+        }
+        if (!wifi_joined) {
+            DEBUG_PRINTF("[SB] all %d WiFi networks failed\n", n_networks);
             return -2;
         }
-        uint8_t ip[4] = {0};
-        if (WIFI_GetIP_Address(ip, 4) == WIFI_STATUS_OK)
-            SUCCESS_PRINTF("[SB] WiFi up, IP %d.%d.%d.%d\n", ip[0], ip[1],
-                           ip[2], ip[3]);
-        wifi_joined = 1;
     }
     if (!dns_resolved) {
+#if !SB_USE_RELAY
         if (WIFI_GetHostAddress(SUPABASE_HOST, server_ip, 4) !=
             WIFI_STATUS_OK) {
             DEBUG_PRINTF("[SB] DNS lookup failed\n");
             return -3;
         }
+        DEBUG_PRINTF("[SB] " SUPABASE_HOST " -> %d.%d.%d.%d\n", server_ip[0],
+                     server_ip[1], server_ip[2], server_ip[3]);
+#endif
         dns_resolved = 1;
     }
     return 0;
@@ -351,10 +381,9 @@ out:
 /* ── public API ─────────────────────────────────────────────────────── */
 
 int Supabase_UploadNow(void) {
-    if (!GPS_TimeKnown()) {
-        DEBUG_PRINTF("[SB] no GPS time yet — cannot timestamp upload\n");
-        return -1;
-    }
+    if (!GPS_TimeKnown())
+        DEBUG_PRINTF("[SB] WARNING: no GPS time — timestamps will start at "
+                     "1970 (bench test mode)\n");
     return upload_log();
 }
 

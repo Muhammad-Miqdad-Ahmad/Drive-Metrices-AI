@@ -114,6 +114,21 @@ static void process_line(void) {
 void GPS_Init(void) {
     memset(&fix, 0, sizeof(fix));
     line_pos = 0;
+    /* The GPS has been streaming since power-on with nobody reading — the
+       overrun flag is set and would instantly abort interrupt reception.
+       Clear all stale errors before arming. */
+    __HAL_UART_CLEAR_FLAG(&huart4, UART_CLEAR_OREF | UART_CLEAR_NEF |
+                                       UART_CLEAR_FEF | UART_CLEAR_PEF);
+    /* UART4 IRQ is enabled by HAL_UART_MspInit (NVIC ticked in CubeMX) */
+    HAL_UART_Receive_IT(&huart4, &rx_byte, 1);
+}
+
+/* Call from HAL_UART_ErrorCallback: on any UART error (overrun etc.) the
+   HAL stops reception — clear the error and re-arm so GPS RX survives. */
+void GPS_UART_ErrorCallback(void) {
+    __HAL_UART_CLEAR_FLAG(&huart4, UART_CLEAR_OREF | UART_CLEAR_NEF |
+                                       UART_CLEAR_FEF | UART_CLEAR_PEF);
+    line_pos = 0;
     HAL_UART_Receive_IT(&huart4, &rx_byte, 1);
 }
 

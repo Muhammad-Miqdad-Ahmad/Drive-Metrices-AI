@@ -24,6 +24,7 @@ int SD_Log_Init(void) {
     if (res != FR_OK)
       return -1;
   }
+  /* append — existing data on the card is preserved */
   res = f_open(&log_file, SD_LOG_PATH, FA_OPEN_ALWAYS | FA_WRITE);
   printf("[SD] f_open=%d\n", res);
   if (res != FR_OK)
