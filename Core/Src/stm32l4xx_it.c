@@ -57,7 +57,7 @@
 /* External variables --------------------------------------------------------*/
 extern I2C_HandleTypeDef hi2c2;
 /* USER CODE BEGIN EV */
-
+extern SPI_HandleTypeDef hspi; /* es-WiFi SPI3 handle (Drivers/WiFi/Src/es_wifi_io.c) */
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -245,5 +245,21 @@ void EXTI15_10_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles EXTI line1 interrupt (es-WiFi data-ready, PE1).
+  */
+void EXTI1_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_1);
+}
+
+/**
+  * @brief This function handles SPI3 global interrupt (es-WiFi transfers).
+  */
+void SPI3_IRQHandler(void)
+{
+  HAL_SPI_IRQHandler(&hspi);
+}
 
 /* USER CODE END 1 */

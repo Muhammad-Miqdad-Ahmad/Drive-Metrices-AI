@@ -21,6 +21,7 @@ set(MX_Include_Dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/CMSIS/Device/ST/STM32L4xx/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/CMSIS/Include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/BSP/Components/lsm6dsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Inc
 )
 
 # STM32CubeMX generated application sources
@@ -28,8 +29,13 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../FATFS/Target/user_diskio.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../FATFS/App/fatfs.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/classifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/gps.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sd_log.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/supabase.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Src/es_wifi.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Src/es_wifi_io.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Src/wifi.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32l4xx_it.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32l4xx_hal_msp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c
@@ -84,8 +90,7 @@ set(MX_LINK_DIRS
 set(MX_LINK_LIBS 
     STM32_Drivers
     ${TOOLCHAIN_LINK_LIBRARIES}
-    FatFs
-	
+    FatFs	
 )
 # Interface library for includes and symbols
 add_library(stm32cubemx INTERFACE)

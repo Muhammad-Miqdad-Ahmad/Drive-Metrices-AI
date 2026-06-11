@@ -21,29 +21,14 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <model_tflite.h>
-#include <stdio.h>
-#include <string.h>
-#include <tensorflow/lite/core/c/common.h>
-#include <tensorflow/lite/micro/micro_interpreter.h>
-#include <tensorflow/lite/micro/micro_log.h>
-#include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
-#include <tensorflow/lite/micro/micro_op_resolver.h>
-#include <tensorflow/lite/micro/micro_profiler.h>
-#include <tensorflow/lite/micro/recording_micro_interpreter.h>
-#include <tensorflow/lite/micro/system_setup.h>
-#include <tensorflow/lite/schema/schema_generated.h>
-
-#include "b_l475e_iot01a1_bus.h"
-#include "fatfs.h"
 #include "gps.h"
-#include "lsm6dsl.h"
+#include "fatfs.h"
 #include "sd_log.h"
-
-#include <dsp/basic_math_functions.h>
-#include <dsp/fast_math_functions.h>
-#include <dsp/transform_functions.h>
-#include <dsp/window_functions.h>
+#include "app_log.h"
+#include "lsm6dsl.h"
+#include "supabase.h"
+#include "classifier.h"
+#include "b_l475e_iot01a1_bus.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,57 +38,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-const int kTensorArenaSize = 48000;
-alignas(16) static uint8_t tensor_arena[kTensorArenaSize];
-
-#define DEBUG_PRINTF(...)                                                      \
-  {                                                                            \
-    printf("[i] ");                                                            \
-    printf(__VA_ARGS__);                                                       \
-  }
-
-#define RAW_PRINTF(...)                                                        \
-  {                                                                            \
-    printf(__VA_ARGS__);                                                       \
-  }
-
-#define SUCCESS_PRINTF(...)                                                    \
-  {                                                                            \
-    printf("[*] ");                                                            \
-    printf(__VA_ARGS__);                                                       \
-  }
-
-/* Scaler constants from notebook — do not modify */
-static const float SCALER_MEAN[48] = {
-    -0.52660075f, 0.92552432f,  -2.46971791f, 1.42646365f,  -1.08713346f,
-    0.02858994f,  1.27643845f,  3.89618156f,  4.16019767f,  1.45395997f,
-    0.95809761f,  7.31645806f,  3.32783283f,  4.99534288f,  4.73456197f,
-    6.35836046f,  0.50716550f,  1.28830385f,  -2.02102969f, 2.65010864f,
-    -0.24544190f, 1.32955882f,  3.53321934f,  4.67113833f,  0.15297517f,
-    0.04737416f,  0.07190084f,  0.24876506f,  0.11952566f,  0.18406218f,
-    0.21576459f,  0.17686422f,  -0.08225364f, 0.03524866f,  -0.15398596f,
-    -0.01671209f, -0.10452421f, -0.05852724f, 0.10989266f,  0.13727387f,
-    -0.44440470f, 0.04404843f,  -0.53592140f, -0.35092079f, -0.47071570f,
-    -0.41798094f, 1.00030717f,  0.18500062f};
-static const float SCALER_SCALE[48] = {
-    0.79834809f,  1.11725889f, 2.70796325f, 2.99170242f, 0.96787476f,
-    1.03103484f,  1.18059936f, 5.23526673f, 0.81953465f, 2.23786787f,
-    5.36808023f,  5.37689118f, 1.48760115f, 1.48432866f, 1.64184263f,
-    10.34018406f, 4.68461919f, 1.98718123f, 6.58826100f, 6.07888270f,
-    4.84926212f,  4.72339753f, 3.91587024f, 6.47268623f, 0.16261260f,
-    0.04741832f,  0.20110329f, 0.14970457f, 0.17302503f, 0.16472156f,
-    0.08845170f,  0.17825900f, 0.08004790f, 0.03592624f, 0.11058524f,
-    0.11497202f,  0.08198896f, 0.08454913f, 0.06047130f, 0.14238991f,
-    0.89173137f,  0.06775713f, 0.85308819f, 0.95136172f, 0.88208573f,
-    0.90391908f,  0.03521959f, 0.26578198f};
-static const char *CLASS_NAMES[6] = {"Idle State",          "Normal Driving",
-                                     "Sudden Acceleration", "Sudden Right Turn",
-                                     "Sudden Left Turn",    "Sudden Brake"};
-#define N_FEATURES 48
-#define WINDOW_SIZE 28 /* samples per inference window */
-#define STEP_SIZE 14   /* 50 % overlap — run inference every 14 new samples */
-#define N_CHANNELS 6   /* GyroX, GyroY, GyroZ, AccX, AccY, AccZ */
-#define N_STATS 8      /* mean, std, min, max, Q1, Q3, RMS, range */
 
 /* USER CODE END PD */
 
@@ -148,10 +82,7 @@ static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 static void MEMS_Init(void);
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
-void PrintModelDetails(const tflite::Model *model);
-static void isort(float *a, int n);
-static void channel_stats(const float *col, int n, float *out);
-void print_shape(TfLiteTensor *tensor);
+extern "C" void SPI_WIFI_ISR(void); /* es-WiFi DRDY handler (es_wifi_io.c) */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -207,34 +138,10 @@ int main(void) {
   // For the inbuilt accelerometer
   MEMS_Init();
 
-  tflite::InitializeTarget();
-  const tflite::Model *tfl_model = tflite::GetModel(model_tflite);
-  assert(tfl_model->version() == TFLITE_SCHEMA_VERSION);
-
-  static tflite::MicroMutableOpResolver<3> resolver;
-  resolver.AddFullyConnected();
-  resolver.AddRelu();
-  resolver.AddSoftmax();
-
-  static tflite::MicroInterpreter interpreter(tfl_model, resolver, tensor_arena,
-                                              kTensorArenaSize);
-
-  if (interpreter.AllocateTensors() != kTfLiteOk) {
-    DEBUG_PRINTF("AllocateTensors FAILED\n");
+  if (Classifier_Init() != 0) {
+    DEBUG_PRINTF("Classifier init FAILED\n");
     Error_Handler();
   }
-
-  TfLiteTensor *inp = interpreter.input(0);
-  TfLiteTensor *out = interpreter.output(0);
-  SUCCESS_PRINTF("TFLite model loaded — input %u bytes, output %u bytes\n",
-                 (unsigned)inp->bytes, (unsigned)out->bytes);
-
-  /* Sliding-window state (28 samples × 6 channels, 50 % overlap) */
-  static float win_buf[WINDOW_SIZE][N_CHANNELS] = {};
-  static int win_head = 0;
-  static int win_count = 0;
-  static int steps_since_infer =
-      STEP_SIZE; /* ≥ STEP_SIZE → first full window fires immediately */
 
   GPS_Init();
   int sd_check = SD_Log_Init();
@@ -243,6 +150,7 @@ int main(void) {
   } else {
     DEBUG_PRINTF("SD card ready\n");
   }
+
 
   /* USER CODE END 2 */
 
@@ -262,60 +170,32 @@ int main(void) {
       /* Channel order: [GyroX, GyroY, GyroZ, AccX, AccY, AccZ]
          Units: mdps ÷ 1000 → dps,   mg ÷ 1000 → g   (match CSV training data)
        */
-      win_buf[win_head][0] = (float)gyro.x / 1000.0f;
-      win_buf[win_head][1] = (float)gyro.y / 1000.0f;
-      win_buf[win_head][2] = (float)gyro.z / 1000.0f;
-      win_buf[win_head][3] = (float)acc.x / 1000.0f;
-      win_buf[win_head][4] = (float)acc.y / 1000.0f;
-      win_buf[win_head][5] = (float)acc.z / 1000.0f;
+      const float sample[6] = {
+          (float)gyro.x / 1000.0f, (float)gyro.y / 1000.0f,
+          (float)gyro.z / 1000.0f, (float)acc.x / 1000.0f,
+          (float)acc.y / 1000.0f,  (float)acc.z / 1000.0f};
 
-      win_head = (win_head + 1) % WINDOW_SIZE;
-      if (win_count < WINDOW_SIZE)
-        win_count++;
-      steps_since_infer++;
+      Classifier_Result_t result;
+      if (Classifier_Push(sample, &result)) {
+        SUCCESS_PRINTF("Prediction: [%d] %s  (%.1f%%)\n", result.best,
+                       CLASS_NAMES[result.best],
+                       result.probs[result.best] * 100.0f);
+        for (int c = 0; c < CLASSIFIER_N_CLASSES; c++)
+          DEBUG_PRINTF("  [%d] %-24s %.4f\n", c, CLASS_NAMES[c],
+                       result.probs[c]);
 
-      if (win_count == WINDOW_SIZE && steps_since_infer >= STEP_SIZE) {
-        steps_since_infer = 0;
-
-        /* Extract 48 statistical features (8 stats × 6 channels) */
-        float col[WINDOW_SIZE], features[N_FEATURES];
-        for (int ch = 0; ch < N_CHANNELS; ch++) {
-          for (int t = 0; t < WINDOW_SIZE; t++)
-            col[t] =
-                win_buf[(win_head + t) % WINDOW_SIZE][ch]; /* oldest first */
-          channel_stats(col, WINDOW_SIZE, features + ch * N_STATS);
-        }
-
-        /* Normalise with StandardScaler and copy into model input */
-        for (int i = 0; i < N_FEATURES; i++)
-          inp->data.f[i] = (features[i] - SCALER_MEAN[i]) / SCALER_SCALE[i];
-
-        if (interpreter.Invoke() != kTfLiteOk) {
-          DEBUG_PRINTF("Invoke() failed!\n");
-        } else {
-          int best = 0;
-          float prob = out->data.f[0];
-          for (int c = 1; c < 6; c++)
-            if (out->data.f[c] > prob) {
-              prob = out->data.f[c];
-              best = c;
-            }
-          SUCCESS_PRINTF("Prediction: [%d] %s  (%.1f%%)\n", best,
-                         CLASS_NAMES[best], prob * 100.0f);
-          for (int c = 0; c < 6; c++)
-            DEBUG_PRINTF("  [%d] %-24s %.4f\n", c, CLASS_NAMES[c],
-                         out->data.f[c]);
-          const GPS_Fix_t *gps = GPS_GetFix();
-          SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h\n",
-                         gps->valid ? "FIX" : "NO FIX", gps->lat, gps->lon,
-                         gps->speed_kmh);
-          SD_Log_Write(HAL_GetTick(), gps, best, CLASS_NAMES[best],
-                       prob * 100.0f);
-        }
+        const GPS_Fix_t *gps = GPS_GetFix();
+        SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h  nmea=%lu\n",
+                       gps->valid ? "FIX" : "NO FIX", gps->lat, gps->lon,
+                       gps->speed_kmh, (unsigned long)GPS_SentenceCount());
+        SD_Log_Write(HAL_GetTick(), gps, result.best, CLASS_NAMES[result.best],
+                     result.probs[result.best] * 100.0f);
       }
+      /* Supabase upload disabled while testing the GPS:
+      Supabase_Process(GPS_GetFix());
+      */
       HAL_Delay(100);
     } else {
-      // DEBUG_PRINTF("No data ready interrupt received yet.\n");
       dataRdyIntReceived = 1;
     }
   }
@@ -543,11 +423,11 @@ static void MX_SPI3_Init(void) {
   hspi3.Instance = SPI3;
   hspi3.Init.Mode = SPI_MODE_MASTER;
   hspi3.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi3.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi3.Init.DataSize = SPI_DATASIZE_16BIT;
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -892,116 +772,14 @@ static void MEMS_Init(void) {
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == GPIO_PIN_11) { /* LSM6DSL INT1 on PD11 */
     dataRdyIntReceived = 1;
+  } else if (GPIO_Pin == GPIO_PIN_1) { /* es-WiFi DRDY on PE1 */
+    SPI_WIFI_ISR();
   }
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == UART4)
     GPS_UART_RxCpltCallback();
-}
-
-void PrintModelDetails(const tflite::Model *model) {
-  DEBUG_PRINTF("TFlite schema version: %lu\n", model->version());
-  assert(model->version() == TFLITE_SCHEMA_VERSION);
-
-  // Primary subgraph usually at index 0
-  const tflite::SubGraph *subgraph = model->subgraphs()->Get(0);
-
-  DEBUG_PRINTF("Number of tensors: %lu\n", subgraph->tensors()->size());
-  for (size_t i = 0; i < subgraph->tensors()->size(); i++) {
-    const tflite::Tensor *tensor = subgraph->tensors()->Get(i);
-    DEBUG_PRINTF("    %u: %s\n", i,
-                 (char *)tflite::EnumNameTensorType(tensor->type()));
-  }
-  DEBUG_PRINTF("Number of operators: %lu\n", subgraph->operators()->size());
-
-  // Iterate over operators and print their details
-  for (size_t i = 0; i < subgraph->operators()->size(); i++) {
-    const tflite::Operator *op = subgraph->operators()->Get(i);
-    const tflite::OperatorCode *op_code =
-        model->operator_codes()->Get(op->opcode_index());
-
-    const char *op_name = tflite::EnumNameBuiltinOperator(
-        static_cast<tflite::BuiltinOperator>(op_code->builtin_code()));
-
-    DEBUG_PRINTF("    %u: %s\n", i, op_name);
-
-    DEBUG_PRINTF("        Inputs: ");
-    for (size_t j = 0; j < op->inputs()->size(); j++) {
-      printf("%lu ", op->inputs()->Get(j));
-    }
-    printf("\n");
-
-    DEBUG_PRINTF("        Outputs: ");
-    for (size_t j = 0; j < op->outputs()->size(); j++) {
-      printf("%lu ", op->outputs()->Get(j));
-    }
-    printf("\n");
-  }
-}
-
-/* Insertion sort — fast enough for n=28 */
-static void isort(float *a, int n) {
-  for (int i = 1; i < n; i++) {
-    float k = a[i];
-    int j = i - 1;
-    while (j >= 0 && a[j] > k) {
-      a[j + 1] = a[j];
-      j--;
-    }
-    a[j + 1] = k;
-  }
-}
-
-/* Compute 8 statistics for one channel into out[0..7]:
-   mean, std, min, max, Q1, Q3, RMS, range
-   Percentiles use linear interpolation — matches numpy.percentile default. */
-static void channel_stats(const float *col, int n, float *out) {
-  float mn = col[0], mx = col[0], sum = 0, sum_sq = 0;
-  for (int i = 0; i < n; i++) {
-    sum += col[i];
-    sum_sq += col[i] * col[i];
-    if (col[i] < mn)
-      mn = col[i];
-    if (col[i] > mx)
-      mx = col[i];
-  }
-  float mean = sum / n, var = 0;
-  for (int i = 0; i < n; i++) {
-    float d = col[i] - mean;
-    var += d * d;
-  }
-
-  float s[WINDOW_SIZE];
-  memcpy(s, col, (size_t)n * sizeof(float));
-  isort(s, n);
-
-  float q1i = 0.25f * (n - 1), q3i = 0.75f * (n - 1);
-  int q1l = (int)q1i, q3l = (int)q3i;
-  float q1 = s[q1l] + (q1i - q1l) * (s[q1l + 1] - s[q1l]);
-  float q3 = s[q3l] + (q3i - q3l) * (s[q3l + 1] - s[q3l]);
-
-  out[0] = mean;
-  out[1] = sqrtf(var / n);
-  out[2] = mn;
-  out[3] = mx;
-  out[4] = q1;
-  out[5] = q3;
-  out[6] = sqrtf(sum_sq / n);
-  out[7] = mx - mn;
-}
-
-void print_shape(TfLiteTensor *tensor) {
-  const char *name = (tensor->name != nullptr) ? tensor->name : "(unnamed)";
-  DEBUG_PRINTF("%s bytes = %u\n", name, (unsigned)tensor->bytes);
-  DEBUG_PRINTF("%s shape = (", name);
-  for (int i = 0; i < tensor->dims->size; i++) {
-    RAW_PRINTF("%d", tensor->dims->data[i]);
-    if (i != tensor->dims->size - 1) {
-      RAW_PRINTF(", ");
-    }
-  }
-  RAW_PRINTF(")\n");
 }
 /* USER CODE END 4 */
 
