@@ -27,7 +27,7 @@
 #include "app_log.h"
 #include "lsm6dsl.h"
 #include "net_config.h"
-#include "supabase.h"
+#include "thingspeak.h"
 #include "classifier.h"
 #include "b_l475e_iot01a1_bus.h"
 /* USER CODE END Includes */
@@ -191,16 +191,15 @@ int main(void) {
         SD_Log_Write(HAL_GetTick(), gps, result.best, CLASS_NAMES[result.best],
                      result.probs[result.best] * 100.0f);
 
-        /* Supabase posting disabled — SD log only, never cleared.
+        /* Upload the accumulated log to ThingSpeak every N predictions */
         static int infer_count = 0;
         if (++infer_count >= UPLOAD_EVERY_N) {
           infer_count = 0;
-          Supabase_UploadNow();
+          ThingSpeak_UploadNow();
         }
-        */
       }
-      /* Final geofenced mode:
-      Supabase_Process(GPS_GetFix());
+      /* Final geofenced mode — replaces the periodic upload above:
+      ThingSpeak_Process(GPS_GetFix());
       */
       HAL_Delay(100);
     } else {
