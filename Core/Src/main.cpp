@@ -160,8 +160,15 @@ int main(void) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (dataRdyIntReceived != 0) {
-      dataRdyIntReceived = 0;
+    /* Sample at 2 Hz to match the model's training window rate. The LSM6DSL's
+       lowest output data rate is 12.5 Hz (there is no 2 Hz setting), so we poll
+       the most recent reading every 500 ms here via HAL_GetTick(). */
+    static uint32_t lastSampleMs = 0;
+    uint32_t now = HAL_GetTick();
+    if (now - lastSampleMs >= 500) {
+      lastSampleMs += 500;
+      if (now - lastSampleMs > 500) /* fell >1 period behind (slow I/O) → resync */
+        lastSampleMs = now;
 
       LSM6DSL_Axes_t acc, gyro;
       LSM6DSL_ACC_GetAxes(&MotionSensor, &acc);
@@ -202,9 +209,6 @@ int main(void) {
       /* Final geofenced mode:
       Supabase_Process(GPS_GetFix());
       */
-      HAL_Delay(100);
-    } else {
-      dataRdyIntReceived = 1;
     }
   }
   /* USER CODE END 3 */
