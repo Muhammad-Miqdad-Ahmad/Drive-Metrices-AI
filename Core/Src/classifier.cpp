@@ -28,28 +28,30 @@ const char *CLASS_NAMES[CLASSIFIER_N_CLASSES] = {
     "Sudden Right Turn",   "Sudden Left Turn", "Sudden Brake"};
 
 /* Scaler constants from notebook — do not modify */
+/* Gyro-mean features (indices 0, 8, 16) are 0 with zero variance after
+   per-window centering; their SCALER_SCALE is 0 and is guarded below. */
 static const float SCALER_MEAN[48] = {
-    -0.52660075f, 0.92552432f,  -2.46971791f, 1.42646365f,  -1.08713346f,
-    0.02858994f,  1.27643845f,  3.89618156f,  4.16019767f,  1.45395997f,
-    0.95809761f,  7.31645806f,  3.32783283f,  4.99534288f,  4.73456197f,
-    6.35836046f,  0.50716550f,  1.28830385f,  -2.02102969f, 2.65010864f,
-    -0.24544190f, 1.32955882f,  3.53321934f,  4.67113833f,  0.15297517f,
-    0.04737416f,  0.07190084f,  0.24876506f,  0.11952566f,  0.18406218f,
-    0.21576459f,  0.17686422f,  -0.08225364f, 0.03524866f,  -0.15398596f,
-    -0.01671209f, -0.10452421f, -0.05852724f, 0.10989266f,  0.13727387f,
-    -0.44440470f, 0.04404843f,  -0.53592140f, -0.35092079f, -0.47071570f,
-    -0.41798094f, 1.00030717f,  0.18500062f};
+    -0.00000000f, 0.92646079f,  -1.94429062f, 1.95204022f,  -0.56155014f,
+    0.55802498f,  0.92646079f,  3.89633084f,  -0.00000000f, 1.45713168f,
+    -3.20900120f, 3.15741605f,  -0.83468869f, 0.83774063f,  1.45713168f,
+    6.36641725f,  0.00000000f,  1.29126623f,  -2.52620138f, 2.15306731f,
+    -0.75612549f, 0.82402458f,  1.29126623f,  4.67926869f,  0.15279416f,
+    0.04732800f,  0.07147660f,  0.24818793f,  0.11946014f,  0.18403542f,
+    0.21577589f,  0.17671133f,  -0.08234199f, 0.03522220f,  -0.15400573f,
+    -0.01708496f, -0.10460475f, -0.05856720f, 0.10988067f,  0.13692078f,
+    -0.44200069f, 0.04378286f,  -0.53302374f, -0.34864098f, -0.46814065f,
+    -0.41584435f, 1.00049619f,  0.18438276f};
 static const float SCALER_SCALE[48] = {
-    0.79834809f,  1.11725889f, 2.70796325f, 2.99170242f, 0.96787476f,
-    1.03103484f,  1.18059936f, 5.23526673f, 0.81953465f, 2.23786787f,
-    5.36808023f,  5.37689118f, 1.48760115f, 1.48432866f, 1.64184263f,
-    10.34018406f, 4.68461919f, 1.98718123f, 6.58826100f, 6.07888270f,
-    4.84926212f,  4.72339753f, 3.91587024f, 6.47268623f, 0.16261260f,
-    0.04741832f,  0.20110329f, 0.14970457f, 0.17302503f, 0.16472156f,
-    0.08845170f,  0.17825900f, 0.08004790f, 0.03592624f, 0.11058524f,
-    0.11497202f,  0.08198896f, 0.08454913f, 0.06047130f, 0.14238991f,
-    0.89173137f,  0.06775713f, 0.85308819f, 0.95136172f, 0.88208573f,
-    0.90391908f,  0.03521959f, 0.26578198f};
+    0.00000000f,  1.11948895f,  2.66582324f,  2.75875460f,  0.61577876f,
+    0.63005866f,  1.11948895f,  5.24600307f,  0.00000000f,  2.24265345f,
+    5.28258264f,  5.29274689f,  1.25380305f,  1.25416601f,  2.24265345f,
+    10.36550167f, 0.00000000f,  1.98977531f,  3.70032405f,  3.51277384f,
+    1.33743717f,  1.33411043f,  1.98977531f,  6.48004915f,  0.16278660f,
+    0.04732353f,  0.20187692f,  0.14988145f,  0.17309676f,  0.16454597f,
+    0.08835064f,  0.17788873f,  0.07997004f,  0.03593683f,  0.11049219f,
+    0.11446219f,  0.08192206f,  0.08453596f,  0.06048115f,  0.14184031f,
+    0.89382048f,  0.06704045f,  0.85492860f,  0.95363405f,  0.88416397f,
+    0.90578035f,  0.03526090f,  0.26373690f};
 
 static tflite::MicroInterpreter *interpreter;
 static TfLiteTensor *inp;
@@ -157,12 +159,27 @@ int Classifier_Push(const float sample[6], Classifier_Result_t *res) {
   for (int ch = 0; ch < N_CHANNELS; ch++) {
     for (int t = 0; t < WINDOW_SIZE; t++)
       col[t] = win_buf[(win_head + t) % WINDOW_SIZE][ch]; /* oldest first */
+    /* Mean-center gyro axes (ch 0-2) per window to remove the per-sensor
+       DC bias — must match the notebook's window_features(). Accel (3-5)
+       keeps its DC component (gravity/tilt). */
+    if (ch < 3) {
+      float m = 0.0f;
+      for (int t = 0; t < WINDOW_SIZE; t++)
+        m += col[t];
+      m /= WINDOW_SIZE;
+      for (int t = 0; t < WINDOW_SIZE; t++)
+        col[t] -= m;
+    }
     channel_stats(col, WINDOW_SIZE, features + ch * N_STATS);
   }
 
-  /* Normalise with StandardScaler and copy into model input */
+  /* Normalise with StandardScaler and copy into model input. The centered
+     gyro-mean features have zero variance (scale==0); feed 0 for them to
+     avoid division by zero — they carry no information by construction. */
   for (int i = 0; i < N_FEATURES; i++)
-    inp->data.f[i] = (features[i] - SCALER_MEAN[i]) / SCALER_SCALE[i];
+    inp->data.f[i] = (SCALER_SCALE[i] > 1e-6f)
+                         ? (features[i] - SCALER_MEAN[i]) / SCALER_SCALE[i]
+                         : 0.0f;
 
   if (interpreter->Invoke() != kTfLiteOk) {
     DEBUG_PRINTF("Invoke() failed!\n");
