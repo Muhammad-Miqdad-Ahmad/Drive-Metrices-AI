@@ -8,7 +8,8 @@
  *
  * Field mapping: field1=prediction class, field2=confidence %,
  *                field3=latitude, field4=longitude, field5=speed km/h,
- *                field6=peak |a| harshness (g)
+ *                field6=peak |a| harshness (g),
+ *                field7=Unix epoch seconds (device/GPS timestamp)
  *
  * Timestamps: SD log stores HAL_GetTick() ms; the GPS time anchor
  * converts ticks to UTC (ISO 8601 created_at). Without a GPS fix the
@@ -181,11 +182,20 @@ static int net_ensure(void) {
         }
     }
     if (!dns_resolved) {
-        if (WIFI_GetHostAddress(THINGSPEAK_HOST, server_ip, 4) !=
-            WIFI_STATUS_OK) {
-            DEBUG_PRINTF("[TS] DNS lookup failed\n");
-            return -3;
+        /* The ISM43362 DNS resolver is flaky and often fails the first
+           try — retry a few times before giving up. */
+        int ok = 0;
+        for (int attempt = 0; attempt < 4 && !ok; attempt++) {
+            if (attempt > 0)
+                HAL_Delay(500);
+            if (WIFI_GetHostAddress(THINGSPEAK_HOST, server_ip, 4) ==
+                WIFI_STATUS_OK)
+                ok = 1;
+            else
+                DEBUG_PRINTF("[TS] DNS lookup failed (try %d/4)\n", attempt + 1);
         }
+        if (!ok)
+            return -3;
         DEBUG_PRINTF("[TS] " THINGSPEAK_HOST " -> %d.%d.%d.%d\n", server_ip[0],
                      server_ip[1], server_ip[2], server_ip[3]);
         dns_resolved = 1;
@@ -208,16 +218,20 @@ static int append_update(const char *line, int *off) {
     json_num(line, "\"conf\":", &conf);
     json_num(line, "\"gmax\":", &gmax); /* peak |a| harshness */
 
+    uint64_t epoch_ms = GPS_TickToEpochMs((uint32_t)tick);
     char iso[24];
-    epoch_to_iso(GPS_TickToEpochMs((uint32_t)tick), iso);
+    epoch_to_iso(epoch_ms, iso);
 
+    /* field7 = Unix epoch seconds. Sent as a 32-bit integer with %lu:
+       newlib-nano has no %llu, and epoch seconds fit in uint32 until 2106.
+       (%.0f is avoided — a float can't hold a 10-digit epoch exactly.) */
     int n = snprintf(body_buf + *off, TS_BODY_SIZE - *off,
                      "%s{\"created_at\":\"%s\",\"field1\":%d,"
                      "\"field2\":%.1f,\"field3\":%.6f,\"field4\":%.6f,"
-                     "\"field5\":%.1f,\"field6\":%.3f}",
+                     "\"field5\":%.1f,\"field6\":%.3f,\"field7\":%lu}",
                      body_buf[*off - 1] == '[' ? "" : ",", iso, (int)pred,
                      (double)conf, (double)lat, (double)lon, (double)spd,
-                     (double)gmax);
+                     (double)gmax, (unsigned long)(epoch_ms / 1000ULL));
     if (n <= 0 || *off + n >= TS_BODY_SIZE - 2) /* room for closing ]} */
         return -2;
     *off += n;
