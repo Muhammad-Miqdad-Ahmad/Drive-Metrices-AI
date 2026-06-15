@@ -21,15 +21,16 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "gps.h"
-#include "fatfs.h"
-#include "sd_log.h"
 #include "app_log.h"
+#include "b_l475e_iot01a1_bus.h"
+#include "classifier.h"
+#include "fatfs.h"
+#include "gps.h"
 #include "lsm6dsl.h"
 #include "net_config.h"
-#include "supabase.h"
-#include "classifier.h"
-#include "b_l475e_iot01a1_bus.h"
+#include "sd_log.h"
+#include "thingspeak.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -167,7 +168,8 @@ int main(void) {
     uint32_t now = HAL_GetTick();
     if (now - lastSampleMs >= 500) {
       lastSampleMs += 500;
-      if (now - lastSampleMs > 500) /* fell >1 period behind (slow I/O) → resync */
+      if (now - lastSampleMs >
+          500) /* fell >1 period behind (slow I/O) → resync */
         lastSampleMs = now;
 
       LSM6DSL_Axes_t acc, gyro;
@@ -177,19 +179,21 @@ int main(void) {
       /* Channel order: [GyroX, GyroY, GyroZ, AccX, AccY, AccZ]
          Units: mdps ÷ 1000 → dps,   mg ÷ 1000 → g   (match CSV training data)
        */
-      const float sample[6] = {
-          (float)gyro.x / 1000.0f, (float)gyro.y / 1000.0f,
-          (float)gyro.z / 1000.0f, (float)acc.x / 1000.0f,
-          (float)acc.y / 1000.0f,  (float)acc.z / 1000.0f};
+      const float sample[6] = {(float)gyro.x / 1000.0f, (float)gyro.y / 1000.0f,
+                               (float)gyro.z / 1000.0f, (float)acc.x / 1000.0f,
+                               (float)acc.y / 1000.0f,  (float)acc.z / 1000.0f};
 
       Classifier_Result_t result;
+
       if (Classifier_Push(sample, &result)) {
         SUCCESS_PRINTF("Prediction: [%d] %s  (%.1f%%)\n", result.best,
                        CLASS_NAMES[result.best],
                        result.probs[result.best] * 100.0f);
-        for (int c = 0; c < CLASSIFIER_N_CLASSES; c++)
+
+        for (int c = 0; c < CLASSIFIER_N_CLASSES; c++) {
           DEBUG_PRINTF("  [%d] %-24s %.4f\n", c, CLASS_NAMES[c],
                        result.probs[c]);
+        }
 
         const GPS_Fix_t *gps = GPS_GetFix();
         SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h\n",
@@ -199,10 +203,12 @@ int main(void) {
         static float window[CLASSIFIER_WINDOW * CLASSIFIER_CHANNELS];
         Classifier_CopyWindow(window);
 
-        /* Dump the entire window over UART, oldest-first, one sample per line */
+        /* Dump the entire window over UART, oldest-first, one sample per line
+         */
         SUCCESS_PRINTF("IMU window (%d samples, raw, oldest-first):\n",
                        CLASSIFIER_WINDOW);
-        DEBUG_PRINTF("   #   gx       gy       gz       ax       ay       az\n");
+        DEBUG_PRINTF(
+            "   #   gx       gy       gz       ax       ay       az\n");
         for (int t = 0; t < CLASSIFIER_WINDOW; t++) {
           const float *s = &window[t * CLASSIFIER_CHANNELS];
           DEBUG_PRINTF("  %2d  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f\n", t,
@@ -213,16 +219,15 @@ int main(void) {
                      result.probs[result.best] * 100.0f, window,
                      CLASSIFIER_WINDOW);
 
-        /* Supabase posting disabled — SD log only, never cleared.
+        // ThingSpeak posting disabled — SD log only, never cleared.
         static int infer_count = 0;
         if (++infer_count >= UPLOAD_EVERY_N) {
           infer_count = 0;
-          Supabase_UploadNow();
+          ThingSpeak_UploadNow();
         }
-        */
       }
       /* Final geofenced mode:
-      Supabase_Process(GPS_GetFix());
+      ThingSpeak_Process(GPS_GetFix());
       */
     }
   }
@@ -617,7 +622,8 @@ static void MX_GPIO_Init(void) {
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, SPBTLE_RF_RST_Pin | ARD_D9_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET); /* SD CS — deasserted at boot */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2,
+                    GPIO_PIN_SET); /* SD CS — deasserted at boot */
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB,

@@ -23,7 +23,7 @@
 /* Private define ------------------------------------------------------------*/
 #define MIN(a,b) ((a)<(b)?(a):(b))
 /* Private variables ---------------------------------------------------------*/
-ES_WIFIObject_t EsWifiObj; /* non-static: supabase.c opens TLS sockets directly */
+ES_WIFIObject_t EsWifiObj; /* non-static: thingspeak.c opens TCP sockets directly */
 
 /* Private functions ---------------------------------------------------------*/
 /**
