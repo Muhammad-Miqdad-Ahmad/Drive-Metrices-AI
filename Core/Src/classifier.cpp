@@ -141,6 +141,13 @@ int Classifier_Init(void) {
   return 0;
 }
 
+void Classifier_CopyWindow(float *out) {
+  /* oldest-first, matching the feature-extraction ordering */
+  for (int t = 0; t < WINDOW_SIZE; t++)
+    for (int ch = 0; ch < N_CHANNELS; ch++)
+      out[t * N_CHANNELS + ch] = win_buf[(win_head + t) % WINDOW_SIZE][ch];
+}
+
 int Classifier_Push(const float sample[6], Classifier_Result_t *res) {
   for (int ch = 0; ch < N_CHANNELS; ch++)
     win_buf[win_head][ch] = sample[ch];
