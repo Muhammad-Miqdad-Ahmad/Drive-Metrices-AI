@@ -35,20 +35,33 @@ int SD_Log_Init(void) {
 }
 
 void SD_Log_Write(uint32_t timestamp_ms, const GPS_Fix_t *fix, int pred_class,
-                  const char *pred_label, float confidence) {
+                  const char *pred_label, float confidence,
+                  const float *window, int n_samples) {
   if (!initialized)
     return;
 
-  char buf[256];
-  int len = snprintf(buf, sizeof(buf),
-                     "{\"time\":%lu,\"lat\":%.6f,\"lon\":%.6f,\"spd\":%.1f,"
-                     "\"fix\":%d,\"pred\":%d,\"label\":\"%s\",\"conf\":%.1f}\n",
-                     (unsigned long)timestamp_ms, (double)fix->lat,
-                     (double)fix->lon, (double)fix->speed_kmh, (int)fix->valid,
-                     pred_class, pred_label, (double)confidence);
+  /* Big enough for the prediction/GPS header + 6 arrays of n_samples
+     floats (~10 chars each). 28 samples -> ~1.8 KB. */
+  static char buf[2400];
+  int o = snprintf(buf, sizeof(buf),
+                   "{\"time\":%lu,\"pred\":%d,\"label\":\"%s\",\"conf\":%.1f,"
+                   "\"lat\":%.6f,\"lon\":%.6f,\"spd\":%.1f,\"fix\":%d",
+                   (unsigned long)timestamp_ms, pred_class, pred_label,
+                   (double)confidence, (double)fix->lat, (double)fix->lon,
+                   (double)fix->speed_kmh, (int)fix->valid);
+
+  static const char *keys[6] = {"gx", "gy", "gz", "ax", "ay", "az"};
+  for (int ch = 0; ch < 6 && o < (int)sizeof(buf); ch++) {
+    o += snprintf(buf + o, sizeof(buf) - o, ",\"%s\":[", keys[ch]);
+    for (int t = 0; t < n_samples && o < (int)sizeof(buf); t++)
+      o += snprintf(buf + o, sizeof(buf) - o, "%s%.4f", t ? "," : "",
+                    (double)window[t * 6 + ch]);
+    o += snprintf(buf + o, sizeof(buf) - o, "]");
+  }
+  o += snprintf(buf + o, sizeof(buf) - o, "}\n");
 
   UINT bw;
-  f_write(&log_file, buf, (UINT)len, &bw);
+  f_write(&log_file, buf, (UINT)o, &bw);
 
   if (++write_count % 10 == 0)
     f_sync(&log_file);

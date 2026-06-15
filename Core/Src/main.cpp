@@ -195,8 +195,23 @@ int main(void) {
         SUCCESS_PRINTF("GPS: %s  lat=%.6f  lon=%.6f  spd=%.1f km/h\n",
                        gps->valid ? "FIX" : "NO FIX", gps->lat, gps->lon,
                        gps->speed_kmh);
+        /* Copy the full 28-sample window (raw) that produced this prediction */
+        static float window[CLASSIFIER_WINDOW * CLASSIFIER_CHANNELS];
+        Classifier_CopyWindow(window);
+
+        /* Dump the entire window over UART, oldest-first, one sample per line */
+        SUCCESS_PRINTF("IMU window (%d samples, raw, oldest-first):\n",
+                       CLASSIFIER_WINDOW);
+        DEBUG_PRINTF("   #   gx       gy       gz       ax       ay       az\n");
+        for (int t = 0; t < CLASSIFIER_WINDOW; t++) {
+          const float *s = &window[t * CLASSIFIER_CHANNELS];
+          DEBUG_PRINTF("  %2d  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f\n", t,
+                       s[0], s[1], s[2], s[3], s[4], s[5]);
+        }
+
         SD_Log_Write(HAL_GetTick(), gps, result.best, CLASS_NAMES[result.best],
-                     result.probs[result.best] * 100.0f);
+                     result.probs[result.best] * 100.0f, window,
+                     CLASSIFIER_WINDOW);
 
         /* Supabase posting disabled — SD log only, never cleared.
         static int infer_count = 0;
