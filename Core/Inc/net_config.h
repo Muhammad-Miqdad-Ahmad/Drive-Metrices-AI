@@ -5,6 +5,8 @@
 /* ── WiFi (2.4 GHz only — the ISM43362 does not support 5 GHz) ──
  * Networks are tried in order; the first successful join is used. */
 #define NET_WIFI_NETWORKS                                                      \
+  { "Iphone", "mahum1234" },                                                   \
+  { "vivo s1", "maheenzahid" },                                                \
   { "Cyber Surge", "cout<<INTERNETpassword" },                                 \
   { "Faculty-ITU", "faculty@itu1234*" },                                       \
   { "ITU-Library", "library@itu1234*" }
@@ -13,11 +15,11 @@
 #define NET_WIFI_SECURITY  WIFI_ECN_WPA2_PSK
 
 /* ── Home zone (upload trigger) ──
- * When the GPS fix is inside this circle, the SD log is uploaded.
- * FILL IN your home/parking coordinates (decimal degrees). */
-#define HOME_LAT           0.0
-#define HOME_LON           0.0
-#define HOME_RADIUS_M      100.0f
+ * When the GPS fix enters this circle, the whole SD log is uploaded and cleared.
+ * Coordinates: Plus Code GF88+553 Lahore → 8J3PGF88+553 → 31.5154, 74.4654. */
+#define HOME_LAT           31.5154
+#define HOME_LON           74.4654
+#define HOME_RADIUS_M      200.0f
 
 /* ── Upload cadence ──
  * Upload the SD log to ThingSpeak after every N predictions. */

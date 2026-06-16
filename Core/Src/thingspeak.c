@@ -9,7 +9,8 @@
  * Field mapping: field1=prediction class, field2=confidence %,
  *                field3=latitude, field4=longitude, field5=speed km/h,
  *                field6=peak |a| harshness (g),
- *                field7=Unix epoch seconds (device/GPS timestamp)
+ *                field7=Unix epoch seconds (device/GPS timestamp),
+ *                field8=collision flag (1 = detected impact)
  *
  * Timestamps: SD log stores HAL_GetTick() ms; the GPS time anchor
  * converts ticks to UTC (ISO 8601 created_at). Without a GPS fix the
@@ -208,7 +209,8 @@ static int net_ensure(void) {
 /* Append one SD log line as a bulk update at body offset *off.
    Returns 0 = appended, -1 = not a log line, -2 = batch full. */
 static int append_update(const char *line, int *off) {
-    float tick = 0, lat = 0, lon = 0, spd = 0, pred = 0, conf = 0, gmax = 0;
+    float tick = 0, lat = 0, lon = 0, spd = 0, pred = 0, conf = 0, gmax = 0,
+          collision = 0;
     if (json_num(line, "\"time\":", &tick) != 0)
         return -1;
     json_num(line, "\"lat\":", &lat);
@@ -216,7 +218,8 @@ static int append_update(const char *line, int *off) {
     json_num(line, "\"spd\":", &spd);
     json_num(line, "\"pred\":", &pred);
     json_num(line, "\"conf\":", &conf);
-    json_num(line, "\"gmax\":", &gmax); /* peak |a| harshness */
+    json_num(line, "\"gmax\":", &gmax);           /* peak |a| harshness */
+    json_num(line, "\"collision\":", &collision); /* 1 = detected impact */
 
     uint64_t epoch_ms = GPS_TickToEpochMs((uint32_t)tick);
     char iso[24];
@@ -228,10 +231,12 @@ static int append_update(const char *line, int *off) {
     int n = snprintf(body_buf + *off, TS_BODY_SIZE - *off,
                      "%s{\"created_at\":\"%s\",\"field1\":%d,"
                      "\"field2\":%.1f,\"field3\":%.6f,\"field4\":%.6f,"
-                     "\"field5\":%.1f,\"field6\":%.3f,\"field7\":%lu}",
+                     "\"field5\":%.1f,\"field6\":%.3f,\"field7\":%lu,"
+                     "\"field8\":%d}",
                      body_buf[*off - 1] == '[' ? "" : ",", iso, (int)pred,
                      (double)conf, (double)lat, (double)lon, (double)spd,
-                     (double)gmax, (unsigned long)(epoch_ms / 1000ULL));
+                     (double)gmax, (unsigned long)(epoch_ms / 1000ULL),
+                     (int)collision);
     if (n <= 0 || *off + n >= TS_BODY_SIZE - 2) /* room for closing ]} */
         return -2;
     *off += n;

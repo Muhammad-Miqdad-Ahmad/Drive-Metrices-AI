@@ -10,10 +10,13 @@ extern "C" {
 
 int  SD_Log_Init(void);
 /* window = n_samples * 6 floats, oldest-first, laid out per sample as
-   [gx,gy,gz,ax,ay,az] (raw values, from Classifier_CopyWindow). */
+   [gx,gy,gz,ax,ay,az] (raw values, from Classifier_CopyWindow).
+   collision = 1 tags this record as a detected impact; gpeak = the peak |a|
+   (g) read at the impact (0 when collision = 0). */
 void SD_Log_Write(uint32_t timestamp_ms, const GPS_Fix_t *fix,
                   int pred_class, const char *pred_label, float confidence,
-                  const float *window, int n_samples);
+                  const float *window, int n_samples,
+                  int collision, float gpeak);
 
 /* Close the append handle so SD_LOG_PATH can be opened for reading.
    Returns 0 on success. */

@@ -37,7 +37,7 @@ int SD_Log_Init(void) {
 
 void SD_Log_Write(uint32_t timestamp_ms, const GPS_Fix_t *fix, int pred_class,
                   const char *pred_label, float confidence, const float *window,
-                  int n_samples) {
+                  int n_samples, int collision, float gpeak) {
   if (!initialized)
     return;
 
@@ -58,10 +58,11 @@ void SD_Log_Write(uint32_t timestamp_ms, const GPS_Fix_t *fix, int pred_class,
   int o = snprintf(buf, sizeof(buf),
                    "{\"time\":%lu,\"pred\":%d,\"label\":\"%s\",\"conf\":%.1f,"
                    "\"lat\":%.6f,\"lon\":%.6f,\"spd\":%.1f,\"fix\":%d,"
-                   "\"gmax\":%.3f",
+                   "\"gmax\":%.3f,\"collision\":%d,\"gpeak\":%.2f",
                    (unsigned long)timestamp_ms, pred_class, pred_label,
                    (double)confidence, (double)fix->lat, (double)fix->lon,
-                   (double)fix->speed_kmh, (int)fix->valid, (double)gmax);
+                   (double)fix->speed_kmh, (int)fix->valid, (double)gmax,
+                   collision, (double)gpeak);
 
   static const char *keys[6] = {"gx", "gy", "gz", "ax", "ay", "az"};
   for (int ch = 0; ch < 6 && o < (int)sizeof(buf); ch++) {

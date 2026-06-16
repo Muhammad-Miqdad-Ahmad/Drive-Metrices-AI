@@ -30,6 +30,7 @@
 #include "net_config.h"
 #include "sd_log.h"
 #include "thingspeak.h"
+#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -40,7 +41,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Collision threshold for the LSM6DSL wake-up engine.
+   WAKE_UP_THS is 6-bit, 1 LSB = FS/64. At ±8 g → 0.125 g/LSB.
+   24 × 0.125 = 3.0 g. Threshold is on high-pass-filtered (gravity-removed)
+   acceleration, so a resting board reads ~0. */
+#define COLLISION_WAKEUP_THS 24
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -66,6 +71,12 @@ UART_HandleTypeDef huart3;
 /* USER CODE BEGIN PV */
 LSM6DSL_Object_t MotionSensor;
 volatile uint32_t dataRdyIntReceived;
+/* Collision detection: set in the LSM6DSL INT1 ISR, serviced in the main loop. */
+volatile uint8_t collisionPending = 0;
+static int   collision_latch = 0;     /* 1 → tag the next record as a collision */
+static float collision_gpeak = 0.0f;  /* peak |a| (g) read at the impact         */
+static int   forceUpload = 0;         /* 1 → upload now (set by a collision),
+                                         otherwise uploads are geofenced          */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -146,12 +157,17 @@ int main(void) {
   }
 
   GPS_Init();
-  int sd_check = SD_Log_Init();
-  if (sd_check != 0) {
-    DEBUG_PRINTF("SD card init FAILED with code %i\n", sd_check);
-  } else {
-    DEBUG_PRINTF("SD card ready\n");
+  /* The SD card is mandatory — do not start logging/inference until it mounts.
+     Retry forever, blinking LED2 on each failure so the board doesn't silently
+     hang if the card is missing or seated badly. */
+  for (int attempt = 1; SD_Log_Init() != 0; attempt++) {
+    DEBUG_PRINTF("SD card init FAILED (attempt %d) — retrying...\n", attempt);
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+    HAL_Delay(250);
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+    HAL_Delay(750);
   }
+  DEBUG_PRINTF("SD card ready\n");
 
   /* USER CODE END 2 */
 
@@ -161,6 +177,32 @@ int main(void) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Collision service — checked every loop pass (not gated by the 2 Hz timer)
+       so we react to the hardware wake-up interrupt immediately. */
+    if (collisionPending) {
+      collisionPending = 0;
+      LSM6DSL_Event_Status_t st;
+      LSM6DSL_ACC_Get_Event_Status(&MotionSensor, &st); /* confirm + clear latch */
+      if (st.WakeUpStatus) {
+        LSM6DSL_Axes_t a;
+        LSM6DSL_ACC_GetAxes(&MotionSensor, &a);
+        float gpk = sqrtf((float)a.x * a.x + (float)a.y * a.y +
+                          (float)a.z * a.z) /
+                    1000.0f; /* mg → g magnitude */
+        collision_latch = 1;
+        collision_gpeak = gpk;
+        SUCCESS_PRINTF("*** COLLISION detected: ~%.2f g ***\n", (double)gpk);
+        /* Distinct LED pattern (vs the 60 ms log blink): 6 × 80 ms blinks. */
+        for (int i = 0; i < 6; i++) {
+          HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+          HAL_Delay(80);
+          HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+          HAL_Delay(80);
+        }
+        forceUpload = 1; /* a crash uploads immediately, not just at the home zone */
+      }
+    }
+
     /* Sample at 2 Hz to match the model's training window rate. The LSM6DSL's
        lowest output data rate is 12.5 Hz (there is no 2 Hz setting), so we poll
        the most recent reading every 500 ms here via HAL_GetTick(). */
@@ -217,18 +259,21 @@ int main(void) {
 
         SD_Log_Write(HAL_GetTick(), gps, result.best, CLASS_NAMES[result.best],
                      result.probs[result.best] * 100.0f, window,
-                     CLASSIFIER_WINDOW);
+                     CLASSIFIER_WINDOW, collision_latch, collision_gpeak);
+        collision_latch = 0; /* one-shot — only the first record after impact */
 
-        // ThingSpeak posting disabled — SD log only, never cleared.
-        static int infer_count = 0;
-        if (++infer_count >= UPLOAD_EVERY_N) {
-          infer_count = 0;
+        /* Upload policy:
+           - a collision (forceUpload) pushes the log immediately — the crash
+             record was just written above, so it goes out now;
+           - otherwise upload only when the vehicle reaches the home geofence
+             (HOME_LAT/HOME_LON/HOME_RADIUS_M), then the log is cleared. */
+        if (forceUpload) {
+          forceUpload = 0;
           ThingSpeak_UploadNow();
+        } else {
+          ThingSpeak_Process(gps);
         }
       }
-      /* Final geofenced mode:
-      ThingSpeak_Process(GPS_GetFix());
-      */
     }
   }
   /* USER CODE END 3 */
@@ -798,13 +843,23 @@ static void MEMS_Init(void) {
   LSM6DSL_ACC_SetOutputDataRate(&MotionSensor, 2.0f);
   LSM6DSL_GYRO_SetOutputDataRate(&MotionSensor, 2.0f);
 
-  /* Route accelerometer data-ready to INT1 (PD11) */
-  LSM6DSL_ACC_Set_INT1_DRDY(&MotionSensor, ENABLE);
+  /* Collision detection: LSM6DSL hardware wake-up (over-threshold) interrupt on
+     INT1 (PD11). The sensor watches at 416 Hz internally and fires INT1 the
+     instant g exceeds the threshold — catching the ~100 ms crash pulse that the
+     2 Hz poll loop would miss. Enable_Wake_Up_Detection sets ODR=416 Hz and
+     routes wake-up to INT1, but forces ±2 g and a tiny threshold internally, so
+     override both afterwards. This also replaces the old data-ready-on-INT1
+     routing (which the poll loop never used and which would flood PD11 at
+     416 Hz). The model still polls at 2 Hz and is unaffected. */
+  LSM6DSL_ACC_Enable_Wake_Up_Detection(&MotionSensor, LSM6DSL_INT1_PIN);
+  LSM6DSL_ACC_SetFullScale(&MotionSensor, 8);              /* ±8 g (crash range) */
+  LSM6DSL_ACC_Set_Wake_Up_Threshold(&MotionSensor, COLLISION_WAKEUP_THS); /* 3 g */
+  LSM6DSL_ACC_Set_Wake_Up_Duration(&MotionSensor, 0);      /* fire on 1st sample */
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
-  if (GPIO_Pin == GPIO_PIN_11) { /* LSM6DSL INT1 on PD11 */
-    dataRdyIntReceived = 1;
+  if (GPIO_Pin == GPIO_PIN_11) { /* LSM6DSL INT1 on PD11 — wake-up (collision) */
+    collisionPending = 1;        /* serviced in the main loop (no I2C in ISR) */
   } else if (GPIO_Pin == GPIO_PIN_1) { /* es-WiFi DRDY on PE1 */
     SPI_WIFI_ISR();
   }
