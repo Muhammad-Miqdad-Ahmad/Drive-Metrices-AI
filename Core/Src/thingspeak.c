@@ -39,7 +39,7 @@ extern ES_WIFIObject_t EsWifiObj; /* defined in Drivers/WiFi/Src/wifi.c */
 #define TS_TIMEOUT_MS  10000
 #define TS_HDR_SIZE    512
 #define TS_BODY_SIZE   3072 /* ~25 updates per bulk request */
-#define TS_RESP_SIZE   512
+#define TS_RESP_SIZE   1024 /* big enough for headers + the error JSON body */
 #define TS_RATE_MS     15500 /* free tier: 1 bulk request / 15 s */
 
 static uint8_t server_ip[4];
@@ -133,12 +133,24 @@ static int http_post(const char *path, const char *body) {
     }
 
     {
-        uint16_t rcv = 0;
-        if (ES_WIFI_ReceiveData(&EsWifiObj, TS_SOCKET, (uint8_t *)resp_buf,
-                                sizeof(resp_buf) - 1, &rcv,
-                                TS_TIMEOUT_MS) != ES_WIFI_STATUS_OK || rcv == 0)
+        /* Drain the whole response (headers + body). The server uses
+           "Connection: close", so reads return 0 once it's done. Looping lets
+           us capture ThingSpeak's JSON error body, not just the headers. */
+        int total = 0;
+        while (total < (int)sizeof(resp_buf) - 1) {
+            uint16_t rcv = 0;
+            if (ES_WIFI_ReceiveData(&EsWifiObj, TS_SOCKET,
+                                    (uint8_t *)resp_buf + total,
+                                    sizeof(resp_buf) - 1 - total, &rcv,
+                                    TS_TIMEOUT_MS) != ES_WIFI_STATUS_OK)
+                break;
+            if (rcv == 0)
+                break;
+            total += rcv;
+        }
+        if (total == 0)
             goto out;
-        resp_buf[rcv] = '\0';
+        resp_buf[total] = '\0';
 
         int code = 0;
         if (sscanf(resp_buf, "HTTP/1.%*c %d", &code) == 1)
@@ -252,17 +264,30 @@ static int body_reset(void) {
     return off;
 }
 
+#define TS_SEND_TRIES 3
+
 static int body_send(int off) {
     body_buf[off]     = ']';
     body_buf[off + 1] = '}';
     body_buf[off + 2] = '\0';
-    int code = http_post(TS_BULK_PATH, body_buf);
-    if (code < 200 || code >= 300) {
+
+    for (int attempt = 1; attempt <= TS_SEND_TRIES; attempt++) {
+        if (attempt > 1) {
+            DEBUG_PRINTF("[TS] retry %d/%d (waiting 15 s for rate limit)...\n",
+                         attempt, TS_SEND_TRIES);
+            HAL_Delay(TS_RATE_MS);
+        }
+        int code = http_post(TS_BULK_PATH, body_buf);
+        if (code >= 200 && code < 300)
+            return 0;
+
         DEBUG_PRINTF("[TS] bulk POST failed (HTTP %d)\n", code);
-        DEBUG_PRINTF("[TS] response: %.200s\n", resp_buf);
-        return -1;
+        /* Print ThingSpeak's actual error message: the JSON body sits after the
+           blank line that ends the HTTP headers. */
+        const char *b = strstr(resp_buf, "\r\n\r\n");
+        DEBUG_PRINTF("[TS] response body: %.300s\n", b ? b + 4 : resp_buf);
     }
-    return 0;
+    return -1;
 }
 
 static int upload_log(void) {
@@ -367,9 +392,12 @@ void ThingSpeak_Process(const GPS_Fix_t *fix) {
     }
 
     if (dist <= HOME_RADIUS_M && was_outside) {
-        was_outside = 0;
         SUCCESS_PRINTF("[TS] home zone reached (%.0f m) — uploading\n",
                        (double)dist);
-        upload_log();
+        /* Disarm only on a fully successful upload. If it fails (e.g. a bad
+           batch), keep was_outside set so the next pass retries while still
+           parked, instead of giving up until we leave and return. */
+        if (upload_log() == 0)
+            was_outside = 0;
     }
 }
