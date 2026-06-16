@@ -168,10 +168,13 @@ Everything else is untouched:
 - The sensor read, the mg→g / mdps→dps unit conversion, the `Classifier_Push`
   call, the prediction print-out, and the GPS / SD-log code are **byte-for-byte the
   same**.
-- The commented-out Supabase upload blocks are left exactly as they were.
-- `MEMS_Init`, the EXTI/ISR plumbing, and the `dataRdyIntReceived` variable are left
-  in place. The loop no longer reads that flag; the ISR still sets it harmlessly.
-  (Leaving the plumbing means switching to Option A later is easy.)
+
+> **Since superseded:** the cloud path has since moved from Supabase to **ThingSpeak**
+> (geofenced upload, [`thingspeak.c`](Core/Src/thingspeak.c)), and the INT1 line that
+> originally carried the data-ready interrupt has been **repurposed for the LSM6DSL
+> hardware collision wake-up** (see the main [`README.md`](README.md) §10). The 2 Hz
+> timer-poll described here is unchanged — collision detection runs independently in
+> the sensor and does not touch the sampling loop.
 
 ---
 
@@ -208,9 +211,10 @@ still-open item and is unaffected by the sampling-rate change.
 
 ## 10. Notes
 
-- `MEMS_Init` still requests `2.0f`, which resolves to **12.5 Hz** in hardware. Left
-  as-is intentionally; the loop decimates to 2 Hz. (Could be written `12.5f` to read
-  honestly.)
+- `MEMS_Init` still requests `2.0f` (resolves to **12.5 Hz**, the LSM6DSL's lowest
+  rate), then enabling the collision wake-up bumps the **accelerometer ODR to 416 Hz**
+  internally. Either way the poll loop reads the *latest* sample every 500 ms, so the
+  model still sees 2 Hz — the hardware ODR only sets how fresh that latest sample is.
 - The wait is a busy-spin (no sleep). Functionally fine; add `__WFI()` in the wait if
   power ever matters.
 - The feature-extraction math, the scaler constants, and the model I/O in

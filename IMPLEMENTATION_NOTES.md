@@ -1,8 +1,19 @@
 # Implementation Notes — Driver Behaviour MLP on STM32L475 IoT Node
 
+> **Scope:** these notes cover the **initial TFLite Micro bring-up** — deploying the
+> model and proving inference on the device with a dummy input. The firmware has since
+> gained real IMU sampling, GPS, SD logging, ThingSpeak upload, and hardware collision
+> detection; for the full current system see [`README.md`](README.md). Figures below
+> have been updated to the current build where they were measured (footprint, baud,
+> tensor arena); the historical narrative is kept for context.
+
 ## What was implemented
 
-A 6-class driver behaviour classifier (MLP neural network) was deployed on the STM32L475VGTx microcontroller using TensorFlow Lite Micro. The firmware runs inference on dummy data over UART, proving the full inference pipeline works on the device before real sensor data is added.
+A 6-class driver behaviour classifier (MLP neural network) was deployed on the
+STM32L475VGTx microcontroller using TensorFlow Lite Micro. This bring-up first ran
+inference on **dummy data** over UART to prove the pipeline; the firmware now feeds
+the model **real IMU windows** ([`classifier.cpp`](Core/Src/classifier.cpp)) — see
+[`MODEL_SAMPLING_RATE_FIX.md`](MODEL_SAMPLING_RATE_FIX.md).
 
 ---
 
@@ -11,9 +22,8 @@ A 6-class driver behaviour classifier (MLP neural network) was deployed on the S
 | Property | Value |
 |----------|-------|
 | Architecture | MLP — Input(48) → Dense(64, ReLU) → Dense(32, ReLU) → Dense(6, Softmax) |
-| Parameters | 5,414 |
-| Training accuracy | 98.70% |
-| TFLite file | `driver_behaviour_mlp.tflite` (9,896 bytes) |
+| Parameters / accuracy | See [`driver_behaviour_detection.ipynb`](driver_behaviour_detection.ipynb) (the model has been retrained since these notes) |
+| TFLite file | `driver_behaviour_mlp.tflite` (24,008 bytes) |
 | Input | 48 normalised statistical features from a 28-sample IMU window |
 | Output | 6 class probabilities |
 | Classes | Idle State, Normal Driving, Sudden Acceleration, Sudden Right Turn, Sudden Left Turn, Sudden Brake |
@@ -35,11 +45,11 @@ A 6-class driver behaviour classifier (MLP neural network) was deployed on the S
 
 #### Changes to `main.cpp`
 - **Removed** `waveform[16128]` and `last_ffts[125]` — leftover audio model buffers that wasted 16+ KB of RAM.
-- **Reduced** `kTensorArenaSize` from 66,800 → 24,000 bytes. The audio model needed 65 KB for FFT scratch space; this MLP only needs ~10–12 KB. 24 KB gives a comfortable safety margin.
-- **Added** `SCALER_MEAN[48]` and `SCALER_SCALE[48]` — StandardScaler constants extracted from the training notebook (Cell 23 output). These must be applied to features before inference to match training normalisation.
+- **Reduced** `kTensorArenaSize` from 66,800 → **48,000** bytes. The audio model needed 65 KB for FFT scratch space; this MLP needs far less, and 48 KB leaves a comfortable margin. (Now defined in [`classifier.cpp`](Core/Src/classifier.cpp).)
+- **Added** `SCALER_MEAN[48]` and `SCALER_SCALE[48]` — StandardScaler constants extracted from the training notebook. These are applied to features before inference to match training normalisation. (Now in `classifier.cpp`, alongside per-window gyro mean-centring.)
 - **Added** `CLASS_NAMES[6]` — human-readable labels for the 6 output classes.
-- **Added TFLite initialisation** in `USER CODE BEGIN 2`: model loading, op resolver with `AddFullyConnected / AddRelu / AddSoftmax / AddQuantize / AddDequantize`, interpreter creation, and `AllocateTensors`.
-- **Added inference loop** in `while(1)`: dummy all-zero feature vector, `Invoke()`, argmax over outputs, UART print of prediction + all 6 probabilities every 2 seconds.
+- **Added TFLite initialisation** (now in `classifier.cpp`): model loading, op resolver with just `AddFullyConnected / AddRelu / AddSoftmax` (the float32 model uses no quantize/dequantize ops), interpreter creation, and `AllocateTensors`.
+- **Added inference loop**: during bring-up a dummy all-zero feature vector every 2 s; now a real 28×6 IMU sliding window at 2 Hz, `Invoke()`, argmax, and UART print of the prediction + all 6 probabilities.
 
 ---
 
@@ -77,7 +87,7 @@ STM32_Programmer_CLI -c port=SWD -w build/Debug/upload_test_2.elf -v -rst
 
 ## Expected UART output
 
-Connect a serial terminal at **921600 baud** to the ST-Link USB (USART1 on PB6/PB7).
+Connect a serial terminal at **115200 baud** to the ST-Link USB (USART1 on PB6/PB7).
 
 On startup:
 ```
@@ -99,7 +109,7 @@ Then every 2 seconds:
 [i]   [5] Sudden Brake           0.xxxx
 ```
 
-The dummy input (all zeros after normalisation) will consistently predict the same class — this is expected and only means "what does the model predict for the statistical average input?" Predictions will become meaningful once real sensor features are fed in.
+During bring-up the dummy input (all zeros after normalisation) consistently predicted the same class — expected, since it asks "what does the model predict for the statistical-average input?" With the real sensor pipeline now in place, predictions reflect actual motion.
 
 ---
 
@@ -110,23 +120,35 @@ The dummy input (all zeros after normalisation) will consistently predict the sa
 | Linker error: `undefined reference to DebugLog` | `debug_log.cc` is missing from CMakeLists.txt `target_sources` |
 | Linker error: `undefined reference to model_tflite` | Symbol rename or `const` was missed in `model_tflite.cc` |
 | Linker error: `undefined reference to arm_fully_connected_s8` / `arm_softmax_s8` | Library link order in CMakeLists.txt — `libtflm.a` must come **before** `libcmsis-nn.a`. GNU ld scans archives left-to-right; the library that creates undefined references must precede the one that satisfies them. |
-| `AllocateTensors FAILED` on UART | Increase `kTensorArenaSize` from 24000 to 32000 and rebuild |
-| No UART output at all | Check baud rate is exactly 921600; check USART1 is selected (PB6/PB7 pins, ST-Link UART) |
+| `AllocateTensors FAILED` on UART | Increase `kTensorArenaSize` (currently 48000) and rebuild |
+| No UART output at all | Check baud rate is exactly 115200; check USART1 is selected (PB6/PB7 pins, ST-Link UART) |
 
 ## Build memory usage (after all fixes)
+
+Bring-up build (dummy-data, model only):
 
 | Region | Used | Available | % |
 |--------|------|-----------|---|
 | RAM | 28,344 B | 96 KB | 28.8% |
 | FLASH | 113,880 B | 1024 KB | 10.9% |
 
+Current build (full system — IMU + GPS + SD + Wi-Fi/ThingSpeak + collision):
+
+| Region | Used | Available | % |
+|--------|------|-----------|---|
+| RAM | 63,552 B | 96 KB | 64.7% |
+| FLASH | 192,888 B | 1024 KB | 18.4% |
+
 ---
 
-## Next steps — adding real sensor data
+## Real sensor data (implemented)
 
-When you are ready to add real IMU data, replace the dummy feature vector block in `while(1)` with:
+This was the original "next steps" recipe; it is now implemented in
+[`main.cpp`](Core/Src/main.cpp) (sampling) and [`classifier.cpp`](Core/Src/classifier.cpp)
+(window + features + inference). The dummy feature-vector block in `while(1)` was
+replaced by:
 
-1. **LSM6DSL driver** (I2C2, address `0x6A`, already initialised via `hi2c2`):
+1. **LSM6DSL driver** (I2C2, 7-bit address `0x6A` → 8-bit `0xD5` with SA0=GND on this board, via the BSP bus):
    - Write `0x10` to `CTRL1_XL` (accelerometer: 12.5 Hz, ±2 g)
    - Write `0x10` to `CTRL2_G` (gyroscope: 12.5 Hz, ±250 dps)
    - Read 12 bytes from `OUTX_L_G` (0x22) to get 3 gyro + 3 acc int16 values

@@ -46,6 +46,8 @@ static uint8_t server_ip[4];
 static uint8_t wifi_joined  = 0;
 static uint8_t dns_resolved = 0;
 static uint8_t was_outside  = 1; /* geofence hysteresis */
+static uint32_t ts_last_sec = 0; /* last created_at second — kept strictly
+                                    increasing so no two updates collide */
 
 static char hdr_buf[TS_HDR_SIZE];
 static char body_buf[TS_BODY_SIZE];
@@ -234,8 +236,16 @@ static int append_update(const char *line, int *off) {
     json_num(line, "\"collision\":", &collision); /* 1 = detected impact */
 
     uint64_t epoch_ms = GPS_TickToEpochMs((uint32_t)tick);
+    uint32_t sec = (uint32_t)(epoch_ms / 1000ULL);
+    /* Force strictly-increasing, unique timestamps. ThingSpeak rejects a bulk
+       request that contains two identical created_at values, so if this record
+       lands on the same (or an earlier) second as the previous one, bump it. */
+    if (sec <= ts_last_sec)
+        sec = ts_last_sec + 1;
+    ts_last_sec = sec;
+
     char iso[24];
-    epoch_to_iso(epoch_ms, iso);
+    epoch_to_iso((uint64_t)sec * 1000ULL, iso);
 
     /* field7 = Unix epoch seconds. Sent as a 32-bit integer with %lu:
        newlib-nano has no %llu, and epoch seconds fit in uint32 until 2106.
@@ -247,8 +257,7 @@ static int append_update(const char *line, int *off) {
                      "\"field8\":%d}",
                      body_buf[*off - 1] == '[' ? "" : ",", iso, (int)pred,
                      (double)conf, (double)lat, (double)lon, (double)spd,
-                     (double)gmax, (unsigned long)(epoch_ms / 1000ULL),
-                     (int)collision);
+                     (double)gmax, (unsigned long)sec, (int)collision);
     if (n <= 0 || *off + n >= TS_BODY_SIZE - 2) /* room for closing ]} */
         return -2;
     *off += n;
@@ -291,6 +300,7 @@ static int body_send(int off) {
 }
 
 static int upload_log(void) {
+    ts_last_sec = 0; /* restart the monotonic timestamp sequence for this upload */
     if (net_ensure() != 0)
         return -1;
 

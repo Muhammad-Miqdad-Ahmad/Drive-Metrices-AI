@@ -82,34 +82,52 @@ if (res != FR_OK) {
 
 **Problem:** FatFS was configured with `_USE_LFN = 0` (long filename support disabled). The filename `log.json` has a 4-character extension (`json`), which exceeds the FAT 8.3 limit of 3 characters. `f_open` returned `FR_INVALID_NAME` (error code 6).
 
-**Fix:** Renamed the log file to `data.log` — a valid 8.3 name (4-char base, 3-char extension). The file content is unchanged (JSON Lines format).
+**Fix:** Renamed the log file to `data.log` — a valid 8.3 name (4-char base, 3-char extension). The file content is JSON Lines.
 
 ```c
-f_open(&log_file, "0:/data.log", FA_OPEN_ALWAYS | FA_WRITE);
+f_open(&log_file, "0:/data.log", FA_CREATE_ALWAYS | FA_WRITE);
 ```
+
+---
+
+### 6. ThingSpeak rejected the upload — `error_duplicate_timestamps`
+
+**Problem:** Originally the log was opened with `FA_OPEN_ALWAYS` + seek-to-end (append), so it accumulated records across many boots. The `time` field is `HAL_GetTick()` (ms since *this* boot, restarting at 0 each power-up). At upload time every session's ticks were converted to wall-clock using the *current* GPS anchor, so records from different runs collapsed onto identical `created_at` seconds — and ThingSpeak rejects a bulk update with duplicate timestamps (HTTP 400).
+
+**Fix (two layers):**
+- **Truncate on boot** — `SD_Log_Init()` now opens with `FA_CREATE_ALWAYS`, so one file only ever holds a single power session (monotonic ticks).
+- **Strictly-increasing guard** in `thingspeak.c` — each record's epoch second is bumped to `prev + 1` if it isn't strictly greater than the previous one, so even a tie can't reach the API.
+
+(Trade-off: a mid-trip reset loses that session's data. Drop the clear-on-boot if cross-reboot persistence matters more than keeping one session per file — the uploader guard alone still prevents the 400.)
 
 ---
 
 ## Log Format
 
-Each inference cycle writes one JSON line to `0:/data.log`:
+Each prediction writes one JSON line to `0:/data.log`:
 
 ```json
-{"ts":12340,"lat":0.000000,"lon":0.000000,"spd":0.0,"fix":0,"pred":0,"label":"Idle State","conf":100.0}
+{"time":512000,"pred":1,"label":"Normal Driving","conf":92.4,
+ "lat":31.515000,"lon":74.465000,"spd":18.3,"fix":1,
+ "gmax":1.07,"collision":0,"gpeak":0.00,
+ "gx":[...28...],"gy":[...],"gz":[...],"ax":[...],"ay":[...],"az":[...]}
 ```
 
-| Field   | Description |
-|---------|-------------|
-| `ts`    | Timestamp in milliseconds since boot (`HAL_GetTick()`) |
-| `lat`   | GPS latitude in decimal degrees (positive = North) |
-| `lon`   | GPS longitude in decimal degrees (positive = East) |
-| `spd`   | Speed in km/h from GPS |
-| `fix`   | 1 = active GPS fix, 0 = no fix |
-| `pred`  | Predicted class index (0–5) |
-| `label` | Predicted class name |
-| `conf`  | Confidence percentage (0–100) |
+| Field        | Description |
+|--------------|-------------|
+| `time`       | Timestamp in milliseconds since boot (`HAL_GetTick()`) |
+| `pred`       | Predicted class index (0–5) |
+| `label`      | Predicted class name |
+| `conf`       | Confidence percentage (0–100) |
+| `lat` / `lon`| GPS position in decimal degrees (N / E positive) |
+| `spd`        | Speed in km/h from GPS |
+| `fix`        | 1 = active GPS fix, 0 = no fix |
+| `gmax`       | Peak \|a\| over the window in g (harshness) |
+| `collision`  | 1 on the first record after a detected impact, else 0 |
+| `gpeak`      | Peak g read at the impact (0 when `collision` = 0) |
+| `gx … az`    | The entire 28-sample raw window the model classified (6 arrays) |
 
-The file is flushed to disk every 10 records. Remove the card while the board is powered off to avoid data loss.
+The file is flushed to disk every 10 records, truncated on boot, and cleared after a successful ThingSpeak upload. Remove the card while the board is powered off to avoid data loss.
 
 ### Reading on PC
 
@@ -118,5 +136,5 @@ import json
 
 records = [json.loads(line) for line in open("data.log") if line.strip()]
 for r in records:
-    print(r["ts"], r["label"], r["conf"])
+    print(r["time"], r["label"], r["conf"], r["gmax"], r["collision"])
 ```

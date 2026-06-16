@@ -1,5 +1,13 @@
 # Driver Behaviour Detection on STM32L475 — How It Was Built
 
+> **Scope:** this is the original walk-through for getting the **TFLite Micro model
+> running on the board** (train → export → embed → first inference on the device).
+> The firmware has since grown real IMU sampling, GPS, SD logging, ThingSpeak upload,
+> and hardware collision detection — for the full current system see
+> [`README.md`](README.md). The TFLM build steps below are still accurate; the
+> initial "dummy data" inference loop has been replaced by the real sensor pipeline
+> in [`classifier.cpp`](Core/Src/classifier.cpp) (noted inline where relevant).
+
 Target board: **B-L475E-IOT01A** (STM32L475VG, Cortex-M4F, 1 MB flash, 128 KB SRAM)  
 Framework: **TensorFlow Lite Micro (TFLM)**  
 Model: 6-class MLP — Idle / Normal Driving / Sudden Acceleration / Sudden Right Turn / Sudden Left Turn / Sudden Brake
@@ -70,7 +78,12 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --specs=nano.specs -u _pri
 
 ---
 
-## 5. `Core/Src/main.cpp` — Key Additions
+## 5. Embedding TFLM in the firmware — Key Additions
+
+> The TFLM runtime (arena, scaler, op resolver, interpreter) now lives in
+> [`classifier.cpp`](Core/Src/classifier.cpp), not `main.cpp`. During bring-up it was
+> all in `main.cpp` with a dummy feature vector; the snippets below show that
+> original form.
 
 ### 5a. Tensor arena
 
@@ -134,7 +147,13 @@ TfLiteTensor *inp = interpreter.input(0);
 TfLiteTensor *out = interpreter.output(0);
 ```
 
-### 5e. Inference loop (while 1)
+### 5e. Inference loop (while 1) — bring-up placeholder
+
+This proved the pipeline with a dummy all-zero input. **It has since been replaced**
+by real IMU sampling + feature extraction in
+[`classifier.cpp`](Core/Src/classifier.cpp) (28×6 sliding window, 48 statistical
+features, gyro mean-centring); see [`MODEL_SAMPLING_RATE_FIX.md`](MODEL_SAMPLING_RATE_FIX.md).
+The original placeholder block:
 
 ```cpp
 // Replace this block with real LSM6DSL sensor data + feature extraction.
@@ -167,27 +186,22 @@ HAL_Delay(2000);
 
 ## 6. Serial Monitor
 
-UART1 runs at **921600 baud**. Connect with:
+USART1 (ST-Link virtual COM) runs at **115200 baud**. Connect with:
 
 ```bash
-picocom -b 921600 /dev/ttyACM0
+picocom -b 115200 /dev/ttyACM0
 ```
 
 ---
 
-## 7. Next Step — Real Sensor Data
+## 7. Real Sensor Data (done)
 
-When the LSM6DSL driver is integrated, replace the placeholder block in the
-inference loop with:
+The placeholder is gone — [`classifier.cpp`](Core/Src/classifier.cpp) now feeds the
+model real IMU windows. `main.cpp` reads the LSM6DSL every 500 ms (2 Hz) and pushes
+`[GyroX,GyroY,GyroZ,AccX,AccY,AccZ]` into a 28-sample sliding window; on each
+completed window the classifier extracts 48 statistical features, mean-centres the
+gyro axes, normalises with the baked-in `StandardScaler` constants, and runs
+inference. The scaler constants match the Python training pipeline.
 
-```cpp
-float raw[N_FEATURES];
-// ... fill raw[] from LSM6DSL accelerometer + gyroscope readings ...
-
-float features[N_FEATURES];
-for (int i = 0; i < N_FEATURES; i++) {
-    features[i] = (raw[i] - SCALER_MEAN[i]) / SCALER_SCALE[i];
-}
-```
-
-The scaler constants already match the Python training pipeline.
+See [`README.md`](README.md) for how the prediction then flows to GPS tagging, SD
+logging, ThingSpeak upload, and collision detection.

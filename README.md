@@ -110,8 +110,10 @@ CubeMX-generated `main.c`). The main loop:
 4. **Reads GPS** ([`gps.c`](Core/Src/gps.c)) for lat/lon/speed and a UTC time anchor.
 5. **Logs** the prediction + full window + GPS + harshness to the SD card
    ([`sd_log.c`](Core/Src/sd_log.c)) and blinks LED2.
-6. **Uploads** to ThingSpeak every `UPLOAD_EVERY_N` predictions
-   ([`thingspeak.c`](Core/Src/thingspeak.c)).
+6. **Uploads** the whole SD log to ThingSpeak ([`thingspeak.c`](Core/Src/thingspeak.c))
+   when the GPS fix enters the **home geofence** (`HOME_LAT`/`HOME_LON`, see
+   [§9](#9-wi-fi--thingspeak-upload)). A detected collision also forces an immediate
+   upload, regardless of location.
 
 In parallel, the LSM6DSL watches for **collisions in hardware** and interrupts the
 MCU on impact (see [§10](#10-collision-detection)).
@@ -294,8 +296,12 @@ the full 28-sample IMU window, and — on impact — `*** COLLISION detected: ~X
 ## 8. SD-card logging
 
 [`sd_log.c`](Core/Src/sd_log.c) appends one JSON object per prediction to
-`0:/data.log` via FatFS over SPI1. The file is opened in append mode and is **only
-cleared after a fully successful ThingSpeak upload**.
+`0:/data.log` via FatFS over SPI1. The log is **truncated on every boot**
+(`FA_CREATE_ALWAYS`) so a single file only ever holds one power session, and it is
+also cleared after a **fully successful** ThingSpeak upload. (One-session-per-file
+avoids ThingSpeak's `error_duplicate_timestamps`: the `time` field is
+`HAL_GetTick()`, which restarts at 0 each boot, so mixing sessions would map
+different runs to the same wall-clock second — see [§9](#9-wi-fi--thingspeak-upload).)
 
 ```json
 {"time":512000,"pred":1,"label":"Normal Driving","conf":92.4,
@@ -331,7 +337,28 @@ failure). **LFN is disabled**, so 8.3 filenames only (hence `data.log`, not
 [`thingspeak.c`](Core/Src/thingspeak.c) joins Wi-Fi (es-WiFi / ISM43362 on SPI3),
 resolves `api.thingspeak.com` (with DNS retries — the module's resolver is flaky),
 and POSTs the SD log as **bulk updates** over plain HTTP. The free tier allows one
-bulk request per 15 s, so a large backlog is sent in ~26-event batches.
+bulk request per 15 s, so a large backlog is sent in batches (~18 events each, with
+all 8 fields populated) with a retry on failure.
+
+### When does it upload?
+
+There are two triggers — there is **no fixed every-N-predictions cadence**
+(`UPLOAD_EVERY_N` is defined in `net_config.h` but currently unused):
+
+- **Home geofence (normal case).** Each prediction calls `ThingSpeak_Process(gps)`,
+  which uploads and clears the whole log the moment the GPS fix first enters a circle
+  of radius `HOME_RADIUS_M` around `HOME_LAT`/`HOME_LON`. Hysteresis (must travel
+  > 1.5× the radius away before re-arming) stops it re-uploading while parked, and the
+  geofence only disarms on a **successful** upload, so a failed attempt retries on the
+  next pass.
+- **Collision (immediate).** A detected impact sets `forceUpload`, which calls
+  `ThingSpeak_UploadNow()` on the next prediction so the crash reaches the cloud
+  within seconds, wherever the vehicle is.
+
+> **No duplicate timestamps.** ThingSpeak rejects a bulk update containing two equal
+> `created_at` values (`error_duplicate_timestamps`). The uploader forces strictly
+> increasing per-record seconds (bumping to `prev + 1` on a collision/tie), and the
+> clear-on-boot log (see [§8](#8-sd-card-logging)) keeps each file to one session.
 
 ### ThingSpeak field mapping
 
@@ -356,7 +383,8 @@ Each entry also carries a `created_at` ISO-8601 timestamp.
 ### Configuration — [`Core/Inc/net_config.h`](Core/Inc/net_config.h)
 
 Set your Wi-Fi networks (`NET_WIFI_NETWORKS`, tried in order), the ThingSpeak
-`THINGSPEAK_CHANNEL_ID` + `THINGSPEAK_WRITE_KEY`, and `UPLOAD_EVERY_N`.
+`THINGSPEAK_CHANNEL_ID` + `THINGSPEAK_WRITE_KEY`, and the home geofence
+(`HOME_LAT` / `HOME_LON` / `HOME_RADIUS_M`).
 
 > Earlier the project targeted Supabase, but the ISM43362's TLS **cannot send SNI**,
 > which Supabase (behind Cloudflare) requires — so direct HTTPS from the board is
@@ -444,7 +472,7 @@ g-thresholds, sampling-rate analysis) is in the plan that produced this feature.
 |---------|-------|---------|
 | Wi-Fi networks | `net_config.h` → `NET_WIFI_NETWORKS` | (fill in) |
 | ThingSpeak channel + write key | `net_config.h` | (fill in) |
-| Upload cadence | `net_config.h` → `UPLOAD_EVERY_N` | 15 predictions |
+| Upload trigger | `net_config.h` → `HOME_LAT`/`HOME_LON`/`HOME_RADIUS_M` | home geofence + collision (no fixed cadence; `UPLOAD_EVERY_N` is unused) |
 | Collision threshold | `main.cpp` → `COLLISION_WAKEUP_THS` | 24 (≈ 3 g @ ±8 g) |
 | IMU sample period | `main.cpp` main loop | 500 ms (2 Hz) |
 | Window / overlap | `classifier.cpp` | 28 samples, 50 % |
@@ -461,6 +489,11 @@ g-thresholds, sampling-rate analysis) is in the plan that produced this feature.
 - **Timestamps require a GPS fix** (no RTC) — indoors they read ≈ 1970.
 - **SD `f_sync` runs every 10 writes**, so a power cut can lose up to ~9 records, and
   pulling the card mid-write can corrupt the last line (no card-detect pin).
+- **The log clears on every boot.** A mid-trip reset (before reaching the home
+  geofence) discards that session's data. This is the deliberate fix for ThingSpeak's
+  duplicate-timestamp rejection; for cross-reboot persistence the clear-on-boot in
+  [`sd_log.c`](Core/Src/sd_log.c) would need to be dropped (the uploader's
+  strictly-increasing-timestamp guard alone still prevents the 400).
 - **Consumer-grade**, not automotive-qualified — this is a telematics/learning
   project, not a safety system.
 - **CubeMX regeneration** reverts `main.cpp`→`main.c` and drops our sources from the

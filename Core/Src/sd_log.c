@@ -25,12 +25,14 @@ int SD_Log_Init(void) {
     if (res != FR_OK)
       return -1;
   }
-  /* append — existing data on the card is preserved */
-  res = f_open(&log_file, SD_LOG_PATH, FA_OPEN_ALWAYS | FA_WRITE);
+  /* Truncate on boot (FA_CREATE_ALWAYS). The "time" field is HAL_GetTick()
+     (ms since this boot); keeping records from previous sessions would map
+     different runs' ticks to the same wall-clock second at upload time, which
+     ThingSpeak rejects as duplicate timestamps. One run per log file avoids it. */
+  res = f_open(&log_file, SD_LOG_PATH, FA_CREATE_ALWAYS | FA_WRITE);
   printf("[SD] f_open=%d\n", res);
   if (res != FR_OK)
     return -2;
-  f_lseek(&log_file, f_size(&log_file));
   initialized = 1;
   return 0;
 }
