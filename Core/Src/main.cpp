@@ -245,18 +245,6 @@ int main(void) {
         static float window[CLASSIFIER_WINDOW * CLASSIFIER_CHANNELS];
         Classifier_CopyWindow(window);
 
-        /* Dump the entire window over UART, oldest-first, one sample per line
-         */
-        SUCCESS_PRINTF("IMU window (%d samples, raw, oldest-first):\n",
-                       CLASSIFIER_WINDOW);
-        DEBUG_PRINTF(
-            "   #   gx       gy       gz       ax       ay       az\n");
-        for (int t = 0; t < CLASSIFIER_WINDOW; t++) {
-          const float *s = &window[t * CLASSIFIER_CHANNELS];
-          DEBUG_PRINTF("  %2d  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f  %7.3f\n", t,
-                       s[0], s[1], s[2], s[3], s[4], s[5]);
-        }
-
         SD_Log_Write(HAL_GetTick(), gps, result.best, CLASS_NAMES[result.best],
                      result.probs[result.best] * 100.0f, window,
                      CLASSIFIER_WINDOW, collision_latch, collision_gpeak);

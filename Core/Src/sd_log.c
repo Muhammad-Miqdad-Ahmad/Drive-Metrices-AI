@@ -28,7 +28,8 @@ int SD_Log_Init(void) {
   /* Truncate on boot (FA_CREATE_ALWAYS). The "time" field is HAL_GetTick()
      (ms since this boot); keeping records from previous sessions would map
      different runs' ticks to the same wall-clock second at upload time, which
-     ThingSpeak rejects as duplicate timestamps. One run per log file avoids it. */
+     ThingSpeak rejects as duplicate timestamps. One run per log file avoids it.
+   */
   res = f_open(&log_file, SD_LOG_PATH, FA_CREATE_ALWAYS | FA_WRITE);
   printf("[SD] f_open=%d\n", res);
   if (res != FR_OK)
@@ -48,7 +49,8 @@ void SD_Log_Write(uint32_t timestamp_ms, const GPS_Fix_t *fix, int pred_class,
      hard brake/turn. Accel channels are 3,4,5 of each [gx,gy,gz,ax,ay,az]. */
   float gmax = 0.0f;
   for (int t = 0; t < n_samples; t++) {
-    float ax = window[t * 6 + 3], ay = window[t * 6 + 4], az = window[t * 6 + 5];
+    float ax = window[t * 6 + 3], ay = window[t * 6 + 4],
+          az = window[t * 6 + 5];
     float mag = sqrtf(ax * ax + ay * ay + az * az);
     if (mag > gmax)
       gmax = mag;
@@ -66,14 +68,6 @@ void SD_Log_Write(uint32_t timestamp_ms, const GPS_Fix_t *fix, int pred_class,
                    (double)fix->speed_kmh, (int)fix->valid, (double)gmax,
                    collision, (double)gpeak);
 
-  static const char *keys[6] = {"gx", "gy", "gz", "ax", "ay", "az"};
-  for (int ch = 0; ch < 6 && o < (int)sizeof(buf); ch++) {
-    o += snprintf(buf + o, sizeof(buf) - o, ",\"%s\":[", keys[ch]);
-    for (int t = 0; t < n_samples && o < (int)sizeof(buf); t++)
-      o += snprintf(buf + o, sizeof(buf) - o, "%s%.4f", t ? "," : "",
-                    (double)window[t * 6 + ch]);
-    o += snprintf(buf + o, sizeof(buf) - o, "]");
-  }
   o += snprintf(buf + o, sizeof(buf) - o, "}\n");
 
   UINT bw;
