@@ -27,9 +27,9 @@
 #include "fatfs.h"
 #include "gps.h"
 #include "lsm6dsl.h"
+#include "mqtt.h"
 #include "net_config.h"
 #include "sd_log.h"
-#include "thingspeak.h"
 #include <math.h>
 
 /* USER CODE END Includes */
@@ -257,9 +257,9 @@ int main(void) {
              (HOME_LAT/HOME_LON/HOME_RADIUS_M), then the log is cleared. */
         if (forceUpload) {
           forceUpload = 0;
-          ThingSpeak_UploadNow();
+          Mqtt_UploadNow();
         } else {
-          ThingSpeak_Process(gps);
+          Mqtt_Process(gps);
         }
       }
     }

@@ -1,6 +1,6 @@
 #pragma once
-/* Network + ThingSpeak configuration.
- * FILL IN the WiFi credentials and ThingSpeak channel before flashing. */
+/* Network + MQTT configuration.
+ * FILL IN the WiFi credentials and the broker IP before flashing. */
 
 /* ── WiFi (2.4 GHz only — the ISM43362 does not support 5 GHz) ──
  * Networks are tried in order; the first successful join is used. */
@@ -21,12 +21,13 @@
 #define HOME_LON           74.4654
 #define HOME_RADIUS_M      200.0f
 
-/* ── Upload cadence ──
- * Upload the SD log to ThingSpeak after every N predictions. */
-#define UPLOAD_EVERY_N     15
-
-/* ── ThingSpeak (plain HTTP, direct from the board) ── */
-#define THINGSPEAK_HOST        "api.thingspeak.com"
-#define THINGSPEAK_PORT        80
-#define THINGSPEAK_CHANNEL_ID  "3408345"          /* <-- your channel ID  */
-#define THINGSPEAK_WRITE_KEY   "H8VDD3ARZ9O8KQSV" /* <-- your Write API key */
+/* ── MQTT broker (Mosquitto on your PC, plain TCP on the LAN) ──
+ * The board drains its SD log to the broker when it reaches the home zone
+ * (or on a collision). No TLS — the ISM43362 can't do SNI, and a LAN broker
+ * doesn't need it. A Python bridge on the PC turns these messages into trips.
+ * Set MQTT_BROKER_IP to the PC's LAN IPv4 (find it with `ip addr`). */
+#define MQTT_BROKER_IP    { 192, 168, 1, 50 }
+#define MQTT_BROKER_PORT  1883
+#define MQTT_CLIENT_ID    "stm32-drive"
+#define MQTT_TOPIC        "drivemetrics/readings"
+#define DEVICE_TOKEN      "stm32-001"  /* identifies this board in the DB */

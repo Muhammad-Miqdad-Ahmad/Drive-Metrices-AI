@@ -32,7 +32,7 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/classifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/gps.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sd_log.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/thingspeak.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/mqtt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Src/es_wifi.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Src/es_wifi_io.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/WiFi/Src/wifi.c
