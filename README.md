@@ -275,7 +275,21 @@ Flash with **STM32CubeProgrammer**:
 STM32_Programmer_CLI -c port=SWD -w build/Debug/upload_test_2.elf -v -rst
 ```
 
-Typical footprint: **RAM ≈ 64 %** (63 KB / 96 KB), **FLASH ≈ 18 %** (≈188 KB / 1 MB).
+### Memory footprint
+
+From the linker's report on the current `Debug` build (the whole firmware —
+TFLite Micro model + IMU + GPS + SD/FatFS + Wi-Fi/MQTT + collision detection):
+
+| Region | Used | Available | % used |
+|--------|------|-----------|--------|
+| **RAM** (SRAM1) | 59,456 B (≈58 KB) | 96 KB | **60.5 %** |
+| **RAM2** (SRAM2) | 0 B | 32 KB | 0 % |
+| **FLASH** | 188,040 B (≈184 KB) | 1 MB | **17.9 %** |
+
+Plenty of headroom on both — most of RAM is the 48 KB TFLite tensor arena plus
+the 8 KB stack, and most of Flash is the embedded model and the HAL/Wi-Fi/FatFS
+drivers. (The `arm-none-eabi` build prints these figures at the end of every
+link.)
 
 ---
 
