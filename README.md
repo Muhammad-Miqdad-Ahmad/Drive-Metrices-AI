@@ -19,9 +19,13 @@ in hardware, logs everything to an **SD card**, and uploads it over **Wi-Fi** to
                                                    ThingSpeak (HTTP)
 ```
 
-> **Companion mobile app:** the Flutter app that visualises trips, routes, driver
-> scores and collision alerts lives in a separate repo —
-> [**AI-Drive-Metrics-App**](https://github.com/Muhammad-Miqdad-Ahmad/AI-Drive-Metrices-App).
+> **Related repositories**
+> - **Mobile app** — the Flutter app that visualises trips, routes, driver scores
+>   and collision alerts:
+>   [**AI-Drive-Metrics-App**](https://github.com/Muhammad-Miqdad-Ahmad/AI-Drive-Metrices-App).
+> - **ML models** — training, datasets and model export that produce the
+>   `.tflite` deployed here:
+>   [**DriveMetrcisAI-Models**](https://github.com/maheen-zahid-26/DriveMetrcisAI-Models).
 
 ---
 
@@ -534,3 +538,21 @@ g-thresholds, sampling-rate analysis) is in the plan that produced this feature.
 - [`MODEL_SAMPLING_RATE_FIX.md`](MODEL_SAMPLING_RATE_FIX.md) — sampling-rate & gyro-bias fixes
 - [`SD_CARD_INTEGRATION.md`](SD_CARD_INTEGRATION.md) — SD wiring & the bring-up saga
 - Datasheets in repo root: `stm32l475vg.pdf`, `STM32L475-Reference_Manual.pdf`, `stm32-IOT_NODE_Manual.pdf`
+
+---
+
+## 15. License & citation
+
+The **application code in this project** (the files under `Core/Src` / `Core/Inc`
+authored here, and `tools/`) is released under the **MIT License** — see
+[`LICENSE`](LICENSE). You're free to use, modify, and redistribute it with
+attribution.
+
+> **Third-party components keep their own licenses.** The vendored libraries are
+> *not* MIT and retain their original terms — `tflite-micro/`, `CMSIS-NN/`,
+> `CMSIS-DSP/` (Apache-2.0), the STM32 HAL & CMSIS device files (BSD-3-Clause /
+> ST license), FatFS (BSD-style), and the Inventek es-WiFi driver (`Drivers/WiFi/`,
+> ST/Inventek license). Their `LICENSE`/headers are preserved in their folders.
+
+If you use this work in research, please cite it via
+[`CITATION.cff`](CITATION.cff) (GitHub shows a **"Cite this repository"** button).
