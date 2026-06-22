@@ -19,6 +19,10 @@ in hardware, logs everything to an **SD card**, and uploads it over **Wi-Fi** to
                                                    ThingSpeak (HTTP)
 ```
 
+> **Companion mobile app:** the Flutter app that visualises trips, routes, driver
+> scores and collision alerts lives in a separate repo —
+> [**AI-Drive-Metrics-App**](https://github.com/Muhammad-Miqdad-Ahmad/AI-Drive-Metrices-App).
+
 ---
 
 ## Table of contents
@@ -278,13 +282,13 @@ STM32_Programmer_CLI -c port=SWD -w build/Debug/upload_test_2.elf -v -rst
 ### Memory footprint
 
 From the linker's report on the current `Debug` build (the whole firmware —
-TFLite Micro model + IMU + GPS + SD/FatFS + Wi-Fi/MQTT + collision detection):
+TFLite Micro model + IMU + GPS + SD/FatFS + Wi-Fi/ThingSpeak + collision detection):
 
 | Region | Used | Available | % used |
 |--------|------|-----------|--------|
-| **RAM** (SRAM1) | 59,456 B (≈58 KB) | 96 KB | **60.5 %** |
+| **RAM** (SRAM1) | 63,536 B (≈62 KB) | 96 KB | **64.6 %** |
 | **RAM2** (SRAM2) | 0 B | 32 KB | 0 % |
-| **FLASH** | 188,040 B (≈184 KB) | 1 MB | **17.9 %** |
+| **FLASH** | 192,168 B (≈188 KB) | 1 MB | **18.3 %** |
 
 Plenty of headroom on both — most of RAM is the 48 KB TFLite tensor arena plus
 the 8 KB stack, and most of Flash is the embedded model and the HAL/Wi-Fi/FatFS
@@ -353,6 +357,14 @@ resolves `api.thingspeak.com` (with DNS retries — the module's resolver is fla
 and POSTs the SD log as **bulk updates** over plain HTTP. The free tier allows one
 bulk request per 15 s, so a large backlog is sent in batches (~18 events each, with
 all 8 fields populated) with a retry on failure.
+
+> **Alternative transport — `mosquitto` branch.** This `main` branch uploads to
+> ThingSpeak. A separate **[`mosquitto`](../../tree/mosquitto)** branch replaces that
+> with a self-hosted path: the board publishes over **MQTT** to a **Mosquitto** broker
+> on a local PC, and a Python bridge (`tools/mqtt_bridge.py`) forwards the data
+> straight into Supabase. It drops the cloud dependency (plain TCP on the LAN — no
+> TLS/SNI, no rate limits) and is the basis for future work. See that branch's
+> `mqtt.c` / `mqtt.h` and `tools/mqtt_bridge.py`.
 
 ### When does it upload?
 
