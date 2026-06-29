@@ -550,11 +550,24 @@ authored here, and `tools/`) is released under the **MIT License** — see
 [`LICENSE`](LICENSE). You're free to use, modify, and redistribute it with
 attribution.
 
-> **Third-party components keep their own licenses.** The vendored libraries are
-> *not* MIT and retain their original terms — `tflite-micro/`, `CMSIS-NN/`,
-> `CMSIS-DSP/` (Apache-2.0), the STM32 HAL & CMSIS device files (BSD-3-Clause /
-> ST license), FatFS (BSD-style), and the Inventek es-WiFi driver (`Drivers/WiFi/`,
-> ST/Inventek license). Their `LICENSE`/headers are preserved in their folders.
-
 If you use this work in research, please cite it via
 [`CITATION.cff`](CITATION.cff) (GitHub shows a **"Cite this repository"** button).
+
+### Third-party licenses
+
+The MIT license above covers **only our own code**. The vendored libraries keep
+their original licenses (all permissive — no copyleft), and their license files
+and source headers are preserved in their folders:
+
+| Component | Path | License |
+|-----------|------|---------|
+| TensorFlow Lite Micro | [`tflite-micro/`](tflite-micro/LICENSE) | Apache-2.0 |
+| CMSIS-NN | [`CMSIS-NN/`](CMSIS-NN/LICENSE) | Apache-2.0 |
+| CMSIS-DSP | [`CMSIS-DSP/`](CMSIS-DSP/LICENSE) | Apache-2.0 |
+| ARM CMSIS (device) | [`Drivers/CMSIS/`](Drivers/CMSIS/LICENSE.txt) | Apache-2.0 |
+| STM32L4xx HAL | [`Drivers/STM32L4xx_HAL_Driver/`](Drivers/STM32L4xx_HAL_Driver/LICENSE.txt) | BSD-3-Clause |
+| LSM6DSL BSP driver | [`Drivers/BSP/Components/lsm6dsl/`](Drivers/BSP/Components/lsm6dsl/LICENSE.txt) | BSD-3-Clause (ST) |
+| es-WiFi / ISM43362 driver | [`Drivers/WiFi/`](Drivers/WiFi/LICENSE.txt) | BSD-3-Clause (ST) |
+| FatFs | `Middlewares/Third_Party/FatFs/` | BSD-style (ChaN; in the source header) |
+
+We did not modify these sources; their copyright notices are retained intact.
