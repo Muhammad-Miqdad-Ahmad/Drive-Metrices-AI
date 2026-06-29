@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "DriveSense — On-Device Driver-Behaviour & Collision Detection on STM32L475"
+abstract: >-
+  Embedded-AI driving telematics: an STM32L475 IoT board runs a TensorFlow Lite
+  Micro neural network on its onboard 6-axis IMU to classify driving behaviour,
+  detects collisions in hardware, logs trips with GPS to an SD card, and uploads
+  them over Wi-Fi to a cloud backend and a Flutter app.
+type: software
+license: MIT
+date-released: 2026-06-22
+authors:
+  - name: "Muhammad Miqdad Ahmad"
+  - name: "Syeda Maham Batool"
+  - name: "Maheen"
+keywords:
+  - embedded machine learning
+  - TinyML
+  - TensorFlow Lite Micro
+  - STM32
+  - driver behaviour
+  - telematics
+  - collision detection
+# Replace with this repository's URL:
+repository-code: "https://github.com/Muhammad-Miqdad-Ahmad/<firmware-repo-name>"

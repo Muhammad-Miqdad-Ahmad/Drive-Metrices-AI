@@ -26,6 +26,8 @@ in hardware, logs everything to an **SD card**, and uploads it over **Wi-Fi** to
 > - **ML models** — training, datasets and model export that produce the
 >   `.tflite` deployed here:
 >   [**DriveMetrcisAI-Models**](https://github.com/maheen-zahid-26/DriveMetrcisAI-Models).
+> - **FYP report** — the full project report / thesis:
+>   [**FYP-report**](https://github.com/Muhammad-Miqdad-Ahmad/FYP-report).
 
 ---
 
