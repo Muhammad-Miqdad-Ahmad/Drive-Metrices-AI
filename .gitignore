@@ -1,3 +1,39 @@
-build
-mx.scratch
+# ── Build output ──────────────────────────────────────────────
+build/
+Debug/
+Release/
+mx.scratch/
+
+# ── Compiled / firmware artifacts ─────────────────────────────
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.o
+*.obj
+*.su
+
+# ── CMake ─────────────────────────────────────────────────────
+CMakeUserPresets.json
+
+# ── Python (tools/ bridge, relay, notebook envs) ──────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── Editor / OS junk ──────────────────────────────────────────
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Keep the shared STM32CubeIDE settings (force-tracked)
 !.settings
+
+# ── Data & notebooks ──────────────────────────────────────────
+# These live in the DriveMetrcisAI-Models repo, not the firmware repo.
+# Delete the next two lines if you want the dataset/notebook tracked here.
+*.ipynb
+*.csv

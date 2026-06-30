@@ -11,7 +11,7 @@
             "runEntry": "main",
             "imagesAndSymbols": [
                 {
-                    "imageFileName": "${workspaceFolder}/build/Debug/upload_test_2.elf"
+                    "imageFileName": "${workspaceFolder}/build/Debug/Drive-Metrics-AI.elf"
                 }
             ]
         }

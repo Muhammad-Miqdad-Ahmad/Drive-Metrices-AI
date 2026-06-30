@@ -22,7 +22,7 @@ the model **real IMU windows** ([`classifier.cpp`](Core/Src/classifier.cpp)) —
 | Property | Value |
 |----------|-------|
 | Architecture | MLP — Input(48) → Dense(64, ReLU) → Dense(32, ReLU) → Dense(6, Softmax) |
-| Parameters / accuracy | See [`driver_behaviour_detection.ipynb`](driver_behaviour_detection.ipynb) (the model has been retrained since these notes) |
+| Parameters / accuracy | See the [DriveMetrcisAI-Models](https://github.com/maheen-zahid-26/DriveMetrcisAI-Models) repo (the model has been retrained since these notes) |
 | TFLite file | `driver_behaviour_mlp.tflite` (24,008 bytes) |
 | Input | 48 normalised statistical features from a 28-sample IMU window |
 | Output | 6 class probabilities |
@@ -76,11 +76,11 @@ cmake --build build/Debug
 
 ## Flashing
 
-Use **STM32CubeProgrammer** (GUI or CLI) to flash the generated `build/Debug/upload_test_2.elf`:
+Use **STM32CubeProgrammer** (GUI or CLI) to flash the generated `build/Debug/Drive-Metrics-AI.elf`:
 
 ```bash
 # CLI example (adjust serial number if needed)
-STM32_Programmer_CLI -c port=SWD -w build/Debug/upload_test_2.elf -v -rst
+STM32_Programmer_CLI -c port=SWD -w build/Debug/Drive-Metrics-AI.elf -v -rst
 ```
 
 ---

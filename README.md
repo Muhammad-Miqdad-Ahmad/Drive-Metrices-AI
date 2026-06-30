@@ -1,10 +1,10 @@
-# DriveSense — Driver-Behaviour & Collision Detection on STM32L475
+# Drive Metrics AI — Driver-Behaviour & Collision Detection on STM32L475
 
-On-device machine learning for driving telematics. An **STM32L475** (B-L475E-IOT01A
-IoT Discovery node) reads its onboard 6-axis IMU, runs a **TensorFlow Lite Micro**
-neural network to classify how the vehicle is being driven, detects **collisions**
-in hardware, logs everything to an **SD card**, and uploads it over **Wi-Fi** to
-**ThingSpeak**.
+On-device machine learning for driving telematics (STM32 firmware). An
+**STM32L475** (B-L475E-IOT01A IoT Discovery node) reads its onboard 6-axis IMU, runs
+a **TensorFlow Lite Micro** neural network to classify how the vehicle is being
+driven, detects **collisions** in hardware, logs each prediction to an **SD card**,
+and uploads them over **Wi-Fi** to **ThingSpeak**.
 
 ```
  LSM6DSL IMU ─► sliding window ─► 48 features ─► TFLite MLP ─► class (0–5)
@@ -141,11 +141,11 @@ MCU on impact (see [§10](#10-collision-detection)).
 ### Architecture & training
 
 A Keras MLP — `Input(48) → Dense(64, ReLU) → Dense(32, ReLU) → Dense(6, Softmax)`,
-~5.4 k parameters, ~98.7 % accuracy. Trained in
-[`driver_behaviour_detection.ipynb`](driver_behaviour_detection.ipynb) on statistical
-features of IMU windows. A `StandardScaler` is fitted on the training set; its
-`mean_` and `scale_` arrays are copied into `classifier.cpp` as `SCALER_MEAN` /
-`SCALER_SCALE`.
+~5.4 k parameters. Trained on statistical features of IMU windows in the separate
+[**DriveMetrcisAI-Models**](https://github.com/maheen-zahid-26/DriveMetrcisAI-Models)
+repo (training notebook + dataset live there, not here). A `StandardScaler` is fitted
+on the training set; its `mean_` and `scale_` arrays are copied into `classifier.cpp`
+as `SCALER_MEAN` / `SCALER_SCALE`.
 
 > **Gyro bias fix:** both the notebook's `window_features()` and the firmware
 > mean-centre the three gyro axes per window before computing features. The
@@ -154,7 +154,7 @@ features of IMU windows. A `StandardScaler` is fitted on the training set; its
 > After centring, the gyro-mean features have zero variance (their `SCALER_SCALE`
 > is 0) and are fed as 0 with a divide-by-zero guard. Accelerometer axes keep their
 > DC component (gravity). See [`MODEL_SAMPLING_RATE_FIX.md`](MODEL_SAMPLING_RATE_FIX.md)
-> and the notebook.
+> and the [models repo](https://github.com/maheen-zahid-26/DriveMetrcisAI-Models).
 
 ### Export — float32, **no quantisation**
 
@@ -276,13 +276,13 @@ cmake --preset Debug
 
 # Build
 cmake --build build/Debug
-# → build/Debug/upload_test_2.elf
+# → build/Debug/Drive-Metrics-AI.elf
 ```
 
 Flash with **STM32CubeProgrammer**:
 
 ```bash
-STM32_Programmer_CLI -c port=SWD -w build/Debug/upload_test_2.elf -v -rst
+STM32_Programmer_CLI -c port=SWD -w build/Debug/Drive-Metrics-AI.elf -v -rst
 ```
 
 ### Memory footprint
@@ -486,14 +486,14 @@ g-thresholds, sampling-rate analysis) is in the plan that produced this feature.
 | `cmake/gcc-arm-none-eabi.cmake` | ARM toolchain file |
 | [`CMakePresets.json`](CMakePresets.json) | `Debug` / `Release` presets (Ninja) |
 | [`STM32L475XX_FLASH.ld`](STM32L475XX_FLASH.ld) | Linker script (8 KB stack) |
-| `upload_test_2.ioc` | CubeMX project (peripheral config) |
+| `Drive-Metrics-AI.ioc` | CubeMX project (peripheral config) |
 
 ### ML & docs
 
 | Path | Purpose |
 |------|---------|
-| [`driver_behaviour_detection.ipynb`](driver_behaviour_detection.ipynb) | Training, feature engineering, scaler/TFLite export |
-| `driver_behaviour_mlp.tflite` | The trained model (source for `model_tflite.cc`) |
+| [DriveMetrcisAI-Models](https://github.com/maheen-zahid-26/DriveMetrcisAI-Models) *(separate repo)* | Training, feature engineering, scaler/TFLite export — the notebook & dataset live here, not in this repo |
+| `driver_behaviour_mlp.tflite` | The trained model exported from that repo (source for `model_tflite.cc`) |
 | [`HOWTO.md`](HOWTO.md), [`IMPLEMENTATION_NOTES.md`](IMPLEMENTATION_NOTES.md), [`MODEL_SAMPLING_RATE_FIX.md`](MODEL_SAMPLING_RATE_FIX.md), [`SD_CARD_INTEGRATION.md`](SD_CARD_INTEGRATION.md) | Build / model / SD-card deep dives |
 
 ---
